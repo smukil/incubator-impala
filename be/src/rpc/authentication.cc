@@ -38,7 +38,9 @@
 
 #include "exec/kudu-util.h"
 #include "kudu/security/init.h"
+#include "kudu/rpc/sasl_common.h"
 #include "rpc/auth-provider.h"
+#include "rpc/authentication-export.h"
 #include "rpc/thrift-server.h"
 #include "transport/TSaslClientTransport.h"
 #include "util/debug-util.h"
@@ -142,6 +144,24 @@ static const string LDAPS_URI_PREFIX = "ldaps://";
 static const string IMPALA_AUXPROP_PLUGIN = "impala-auxprop";
 
 AuthManager* AuthManager::auth_manager_ = new AuthManager();
+
+std::string GetSaslProtoName() {
+  DCHECK(!FLAGS_keytab_file.empty());
+  SaslAuthProvider* internal_auth_provider;
+  internal_auth_provider = static_cast<SaslAuthProvider*>(
+        AuthManager::GetInstance()->GetInternalAuthProvider());
+
+  return internal_auth_provider->service_name();
+}
+
+std::string GetKerberosRealm() {
+  DCHECK(!FLAGS_keytab_file.empty());
+  SaslAuthProvider* internal_auth_provider;
+  internal_auth_provider = static_cast<SaslAuthProvider*>(
+        AuthManager::GetInstance()->GetInternalAuthProvider());
+
+  return internal_auth_provider->realm();
+}
 
 // This Sasl callback is called when the underlying cyrus-sasl layer has
 // something that it would like to say.  We catch it and turn it into the
@@ -397,7 +417,7 @@ static int SaslVerifyFile(void* context, const char* file,
 // urlen: Length of above
 // propctx: Auxiliary properties - Ignored
 // Return: SASL_OK
-int SaslAuthorizeInternal(sasl_conn_t* conn, void* context,
+int ImpalaSaslAuthorizeInternal(sasl_conn_t* conn, void* context,
     const char* requested_user, unsigned rlen,
     const char* auth_identity, unsigned alen,
     const char* def_realm, unsigned urlen,
@@ -594,7 +614,7 @@ Status InitAuth(const string& appname) {
       KERB_INT_CALLBACKS[0].context = ((void *)"Kerberos (internal)");
 
       KERB_INT_CALLBACKS[1].id = SASL_CB_PROXY_POLICY;
-      KERB_INT_CALLBACKS[1].proc = (int (*)())&SaslAuthorizeInternal;
+      KERB_INT_CALLBACKS[1].proc = (int (*)())&ImpalaSaslAuthorizeInternal;
       KERB_INT_CALLBACKS[1].context = NULL;
 
       KERB_INT_CALLBACKS[2].id = SASL_CB_LIST_END;
@@ -653,6 +673,9 @@ Status InitAuth(const string& appname) {
       KUDU_RETURN_IF_ERROR(kudu::client::DisableSaslInitialization(),
           "Unable to disable Kudu SASL initialization.");
     }
+    KUDU_RETURN_IF_ERROR(kudu::rpc::DisableSaslInitialization(),
+        "Unable to disable Kudu RPC SASL initialization.");
+
 
     // Add our auxprop plugin, which gives us a hook before authentication
     int rc = sasl_auxprop_add_plugin(IMPALA_AUXPROP_PLUGIN.c_str(), &ImpalaAuxpropInit);
@@ -1063,6 +1086,7 @@ Status AuthManager::Init() {
   // the client side, this is just a check for the "back end" kerberos
   // principal.
   if (!kerberos_internal_principal.empty()) {
+
     SaslAuthProvider* sap = NULL;
     internal_auth_provider_.reset(sap = new SaslAuthProvider(true));
     RETURN_IF_ERROR(sap->InitKerberos(kerberos_internal_principal,
