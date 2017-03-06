@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+
+#include <boost/filesystem.hpp>
+
 #include "rpc/rpc-mgr.inline.h"
 
 #include "common/init.h"
@@ -23,12 +26,17 @@
 #include "kudu/rpc/rpc_controller.h"
 #include "kudu/rpc/rpc_header.pb.h"
 #include "kudu/rpc/rpc_sidecar.h"
+#include "kudu/security/test/mini_kdc.h"
+#include "kudu/util/env.h"
 #include "kudu/util/monotime.h"
 #include "kudu/util/status.h"
+#include "rpc/authentication.h"
 #include "testutil/gtest-util.h"
 #include "util/counting-barrier.h"
+#include "util/filesystem-util.h"
 #include "util/network-util.h"
 #include "util/test-info.h"
+#include "util/thread.h"
 
 #include "gen-cpp/rpc_test.proxy.h"
 #include "gen-cpp/rpc_test.service.h"
@@ -42,6 +50,7 @@ using kudu::rpc::RpcContext;
 using kudu::rpc::RpcSidecar;
 using kudu::MonoDelta;
 using kudu::Slice;
+using boost::filesystem::path;
 
 using namespace std;
 
@@ -49,13 +58,25 @@ DECLARE_int32(num_reactor_threads);
 DECLARE_int32(num_acceptor_threads);
 DECLARE_string(hostname);
 
+DECLARE_string(keytab_file);
+DECLARE_string(principal);
+DECLARE_string(krb5_conf);
+
 namespace impala {
 
 static int32_t SERVICE_PORT = FindUnusedEphemeralPort(nullptr);
 
 #define PAYLOAD_SIZE (4096)
 
-class RpcMgrTest : public testing::Test {
+// Create a unique directory for this test to store its files in.
+static boost::filesystem::path unique_test_dir = boost::filesystem::unique_path();
+int kdc_port = FindUnusedEphemeralPort(nullptr);
+
+enum KerberosSwitch {
+  KERBEROS_OFF, KERBEROS_ON
+};
+
+template <class T> class RpcMgrTestBase : public T {
  protected:
   TNetworkAddress krpc_address_;
   RpcMgr rpc_mgr_;
@@ -88,6 +109,92 @@ class RpcMgrTest : public testing::Test {
  private:
   int32_t payload_[PAYLOAD_SIZE];
 };
+
+// For tests that do not require kerberized testing, we use RpcTest.
+class RpcMgrTest : public RpcMgrTestBase<testing::Test> {
+  virtual void SetUp() {
+    RpcMgrTestBase::SetUp();
+  }
+
+  virtual void TearDown() {
+    RpcMgrTestBase::TearDown();
+  }
+};
+
+
+class RpcMgrParamsTest : public RpcMgrTestBase<testing::TestWithParam<KerberosSwitch> > {
+  virtual void SetUp() {
+    if (GetParam() == KERBEROS_ON) {
+      // Check if the unique directory already exists, and create it if it doesn't.
+      if (!FileSystemUtil::VerifyIsDirectory(unique_test_dir.string()).ok()) {
+        boost::filesystem::create_directories(unique_test_dir);
+      }
+      string keytab_dir = unique_test_dir.string() + "/krb5kdc";
+      string realm = "KRBTEST.COM";
+      string ticket_lifetime = "24h";
+      string renew_lifetime = "7d";
+      FLAGS_krb5_conf = Substitute("$0/$1", keytab_dir, "krb5.conf");
+
+      StartKdc(realm, keytab_dir, ticket_lifetime, renew_lifetime);
+
+      IpAddr ip;
+      ASSERT_OK(HostnameToIpAddr(FLAGS_hostname, &ip));
+      string spn = Substitute("impala-test/$0", ip);
+      string kt_path;
+      CreateServiceKeytab(spn, &kt_path);
+
+      FLAGS_keytab_file = kt_path;
+      FLAGS_principal = Substitute("$0@$1", spn, realm);
+
+    }
+    string current_executable_path;
+    ASSERT_TRUE(kudu::Env::Default()->GetExecutablePath(&current_executable_path).ok());
+    ASSERT_OK(InitAuth(current_executable_path));
+    RpcMgrTestBase::SetUp();
+  }
+
+  virtual void TearDown() {
+    if (GetParam() == KERBEROS_ON) {
+      StopKdc();
+      FLAGS_keytab_file.clear();
+      FLAGS_principal.clear();
+      FLAGS_krb5_conf.clear();
+      FileSystemUtil::RemovePaths({unique_test_dir.string()});
+    }
+    RpcMgrTestBase::TearDown();
+  }
+ private:
+  kudu::MiniKdc* kdc_ = nullptr;
+
+  void StartKdc(string realm, string keytab_dir, string ticket_lifetime,
+      string renew_lifetime);
+  void StopKdc();
+  void CreateServiceKeytab(const string& spn, string* kt_path);
+};
+
+void RpcMgrParamsTest::StartKdc(string realm, string keytab_dir, string ticket_lifetime,
+    string renew_lifetime) {
+  kudu::MiniKdcOptions options;
+  options.realm = realm;
+  options.data_root = keytab_dir;
+  options.ticket_lifetime = ticket_lifetime;
+  options.renew_lifetime = renew_lifetime;
+  options.port = kdc_port;
+
+  DCHECK(!kdc_);
+  kdc_ = new kudu::MiniKdc(options);
+  DCHECK(kdc_);
+  ASSERT_TRUE(kdc_->Start().ok());
+  ASSERT_TRUE(kdc_->SetKrb5Environment().ok());
+}
+
+void RpcMgrParamsTest::CreateServiceKeytab(const string& spn, string* kt_path) {
+  ASSERT_TRUE(kdc_->CreateServiceKeytab(spn, kt_path).ok());
+}
+
+void RpcMgrParamsTest::StopKdc() {
+  ASSERT_TRUE(kdc_->Stop().ok());
+}
 
 typedef std::function<void(RpcContext*)> ServiceCB;
 
@@ -139,7 +246,11 @@ class ScanMemServiceImpl : public ScanMemServiceIf {
   }
 };
 
-TEST_F(RpcMgrTest, MultipleServices) {
+INSTANTIATE_TEST_CASE_P(KerberosOnAndOff,
+                        RpcMgrParamsTest,
+                        ::testing::Values(KERBEROS_OFF, KERBEROS_ON));
+
+TEST_P(RpcMgrParamsTest, MultipleServices) {
   // Test that a service can be started, and will respond to requests.
   unique_ptr<ServiceIf> ping_impl(
       new PingServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker()));
