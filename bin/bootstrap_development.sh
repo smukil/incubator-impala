@@ -104,7 +104,8 @@ SET_IMPALA_HOME="export IMPALA_HOME=$(pwd)"
 echo "$SET_IMPALA_HOME" >> ~/.bashrc
 eval "$SET_IMPALA_HOME"
 
-apt-get --yes install ccache g++ gcc libffi-dev liblzo2-dev libkrb5-dev libsasl2-dev \
+apt-get --yes install ccache g++ gcc libffi-dev liblzo2-dev krb5-admin-server krb5-kdc \
+        krb5-user libkrb5-dev libsasl2-dev libsasl2-modules libsasl2-modules-gssapi-mit \
         libssl-dev make maven ninja-build ntp ntpdate python-dev python-setuptools \
         postgresql ssh wget vim-common
 
