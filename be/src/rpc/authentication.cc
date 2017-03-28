@@ -37,6 +37,8 @@
 #include <ldap.h>
 
 #include "exec/kudu-util.h"
+#include "kudu/rpc/sasl_common.h"
+#include "kudu/security/init.h"
 #include "rpc/auth-provider.h"
 #include "rpc/thrift-server.h"
 #include "transport/TSaslClientTransport.h"
@@ -70,8 +72,11 @@ DECLARE_string(be_principal);
 DECLARE_string(krb5_conf);
 DECLARE_string(krb5_debug_file);
 
+// TODO: Remove this flag in a compatibility-breaking release. (IMPALA-5893)
 DEFINE_int32(kerberos_reinit_interval, 60,
-    "Interval, in minutes, between kerberos ticket renewals.");
+    "Interval, in minutes, between kerberos ticket renewals. "
+    "Only used when FLAGS_use_krpc is false");
+
 DEFINE_string(sasl_path, "", "Colon separated list of paths to look for SASL "
     "security library plugins.");
 DEFINE_bool(enable_ldap_auth, false,
@@ -100,6 +105,9 @@ DEFINE_string(internal_principals_whitelist, "hdfs", "(Advanced) Comma-separated
     " additional usernames authorized to access Impala's internal APIs. Defaults to "
     "'hdfs' which is the system user that in certain deployments must access "
     "catalog server APIs.");
+DEFINE_bool(use_kudu_kinit, true, "If true, Impala will programatically perform kinit "
+    "by calling into the libkrb5 library using the provided APIs. If false, it will fork "
+    "off a kinit process.");
 
 namespace impala {
 
@@ -832,13 +840,20 @@ Status SaslAuthProvider::Start() {
   if (needs_kinit_) {
     DCHECK(is_internal_);
     DCHECK(!principal_.empty());
-    Promise<Status> first_kinit;
-    stringstream thread_name;
-    thread_name << "kinit-" << principal_;
-    RETURN_IF_ERROR(Thread::Create("authentication", thread_name.str(),
-        &SaslAuthProvider::RunKinit, this, &first_kinit, &kinit_thread_));
-    LOG(INFO) << "Waiting for Kerberos ticket for principal: " << principal_;
-    RETURN_IF_ERROR(first_kinit.Get());
+    if (FLAGS_use_kudu_kinit) {
+      // Starts a thread that periodically does a 'kinit'. The thread lives as long as the
+      // process does.
+      KUDU_RETURN_IF_ERROR(kudu::security::InitKerberosForServer(),
+          "Could not init kerberos");
+    } else {
+      Promise<Status> first_kinit;
+      stringstream thread_name;
+      thread_name << "kinit-" << principal_;
+      RETURN_IF_ERROR(Thread::Create("authentication", thread_name.str(),
+          &SaslAuthProvider::RunKinit, this, &first_kinit, &kinit_thread_));
+      LOG(INFO) << "Waiting for Kerberos ticket for principal: " << principal_;
+      RETURN_IF_ERROR(first_kinit.Get());
+    }
     LOG(INFO) << "Kerberos ticket granted to " << principal_;
   }
 
