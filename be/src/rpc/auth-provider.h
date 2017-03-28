@@ -140,7 +140,7 @@ class SaslAuthProvider : public AuthProvider {
   /// function as a client.
   bool needs_kinit_;
 
-  /// Runs "RunKinit" below if needs_kinit_ is true.
+  /// Runs "RunKinit" below if needs_kinit_ is true and FLAGS_use_krpc_kinit is false.
   std::unique_ptr<Thread> kinit_thread_;
 
   /// Periodically (roughly once every FLAGS_kerberos_reinit_interval minutes) calls kinit
