@@ -15,26 +15,24 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# where to put generated libraries
-set(LIBRARY_OUTPUT_PATH "${BUILD_OUTPUT_ROOT_DIRECTORY}/rpc")
+# - Find Kerberos Binaries
+# This module ensures that the Kerberos binaries depended on by tests are
+# present on the system.
 
-# where to put generated binaries
-set(EXECUTABLE_OUTPUT_PATH "${BUILD_OUTPUT_ROOT_DIRECTORY}/rpc")
+include(FindPackageHandleStandardArgs)
+set(bins kadmin.local kdb5_util kdestroy kinit klist krb5kdc)
 
-add_library(Rpc
-  authentication.cc
-  rpc-trace.cc
-  TAcceptQueueServer.cpp
-  thrift-util.cc
-  thrift-client.cc
-  thrift-server.cc
-  thrift-thread.cc
-)
-add_dependencies(Rpc gen-deps)
+foreach(bin ${bins})
+  find_program(${bin} ${bin} PATHS
+               # Linux install location.
+               /usr/sbin
+               # Homebrew install location.
+               /usr/local/opt/krb5/sbin
+               # Macports install location.
+               /opt/local/sbin
+               # SLES
+               /usr/lib/mit/sbin)
+endforeach(bin)
 
-ADD_BE_TEST(thrift-util-test)
-ADD_BE_TEST(thrift-server-test)
-# The thrift-server-test uses some utilites from the Kudu security test code.
-target_link_libraries(thrift-server-test security-test-for-impala)
-
-ADD_BE_TEST(authentication-test)
+find_package_handle_standard_args(Kerberos REQUIRED_VARS ${bins}
+  FAIL_MESSAGE "Kerberos binaries not found: security tests will fail")

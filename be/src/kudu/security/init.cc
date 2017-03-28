@@ -457,14 +457,16 @@ Status InitKerberosForServer() {
   // pick up credentials from test cases or any other daemon.
   // TODO(todd): extract these krb5 env vars into some constants since they're
   // typo-prone.
-  setenv("KRB5CCNAME", "MEMORY:kudu", 1);
-  setenv("KRB5_KTNAME", FLAGS_keytab_file.c_str(), 1);
+  //setenv("KRB5CCNAME", "MEMORY:kudu", 1);
+  //setenv("KRB5_KTNAME", FLAGS_keytab_file.c_str(), 1);
+  // We commented out the above since we don't want to overwrite our own Impala
+  // set environment variables.
 
   // KUDU-1897: disable the Kerberos replay cache. The KRPC protocol includes a
   // per-connection server-generated nonce to protect against replay attacks
   // when authenticating via Kerberos. The replay cache has many performance and
   // implementation issues.
-  setenv("KRB5RCACHETYPE", "none", 1);
+  //setenv("KRB5RCACHETYPE", "none", 1);
 
   g_kinit_ctx = new KinitContext();
   string principal;
