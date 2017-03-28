@@ -15,10 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include <boost/filesystem.hpp>
 #include <string>
 
 #include "gen-cpp/StatestoreService.h"
 #include "gutil/strings/substitute.h"
+#include "kudu/security/test/mini_kdc.h"
+#include "rpc/authentication.h"
 #include "rpc/thrift-client.h"
 #include "service/fe-support.h"
 #include "service/impala-server.h"
@@ -31,6 +34,8 @@ using namespace impala;
 using namespace strings;
 using namespace apache::thrift;
 using apache::thrift::transport::SSLProtocol;
+namespace filesystem = boost::filesystem;
+using filesystem::path;
 
 DECLARE_string(ssl_client_ca_certificate);
 DECLARE_string(ssl_cipher_list);
@@ -40,6 +45,10 @@ DECLARE_int32(state_store_port);
 
 DECLARE_int32(be_port);
 DECLARE_int32(beeswax_port);
+
+DECLARE_string(keytab_file);
+DECLARE_string(principal);
+DECLARE_string(krb5_conf);
 
 string IMPALA_HOME(getenv("IMPALA_HOME"));
 const string& SERVER_CERT =
@@ -78,7 +87,80 @@ int GetServerPort() {
   return port;
 }
 
-TEST(ThriftServer, Connectivity) {
+enum KerberosSwitch {
+  KERBEROS_OFF, KERBEROS_ON
+};
+
+namespace kudu {
+
+static MiniKdc* kdc;
+void StartKdc(string realm, string keytab_dir, string ticket_lifetime,
+    string renew_lifetime) {
+  MiniKdcOptions options;
+  /*options.realm = realm;
+  options.data_root = "/tmp/krb5kdc";
+  options.ticket_lifetime = ticket_lifetime;
+  options.renew_lifetime = renew_lifetime;*/
+
+  if (!kdc) kdc = new MiniKdc(options);
+  LOG (INFO) << "Going to start KDC";
+  ASSERT_TRUE(kdc->Start().ok());
+  LOG (INFO) << "Started KDC";
+  ASSERT_TRUE(kdc->SetKrb5Environment().ok());
+  LOG (INFO) << "Set KRB5 Env";
+}
+
+void CreateServiceKeytab(const string& spn, string* kt_path) {
+  ASSERT_TRUE(kdc->CreateServiceKeytab(spn, kt_path).ok());
+}
+
+void StopKdc() {
+  ASSERT_TRUE(kdc->Stop().ok());
+}
+
+} // namespace kudu
+
+template <class T> class ThriftTestBase : public T {
+  virtual void SetUp() {};
+  virtual void TearDown() {};
+};
+
+class ThriftParamsTest : public ThriftTestBase<testing::TestWithParam<KerberosSwitch> > {
+  virtual void SetUp() {
+    if (GetParam() == KERBEROS_ON) {
+      string realm = "KRBTEST.COM";
+      //filesystem::path keytab_dir = filesystem::unique_path();
+      string ticket_lifetime = "24h";
+      string renew_lifetime = "7d";
+      kudu::StartKdc(realm, "/tmp", ticket_lifetime, renew_lifetime);
+      
+      string spn = "impala-test/127.0.0.1";
+      string kt_path;
+      kudu::CreateServiceKeytab("impala-test/127.0.0.1", &kt_path);
+
+      FLAGS_keytab_file = kt_path;
+      FLAGS_principal = "impala-test/127.0.0.1@KRBTEST.COM";
+      FLAGS_krb5_conf = Substitute("/tmp", "krb5.conf");
+    }
+    ASSERT_OK(AuthManager::GetInstance()->Init());
+  }
+
+  virtual void TearDown() {
+    if (GetParam() == KERBEROS_ON) {
+      kudu::StopKdc();
+      FLAGS_keytab_file.clear();
+      FLAGS_principal.clear();
+      FLAGS_krb5_conf.clear();
+    }
+  }
+
+};
+
+INSTANTIATE_TEST_CASE_P(KerberosOnAndOff,
+                        ThriftParamsTest,
+                        ::testing::Values(KERBEROS_OFF, KERBEROS_ON));
+
+TEST_P(ThriftParamsTest, Connectivity) {
   int port = GetServerPort();
   ThriftClient<StatestoreServiceClientWrapper> wrong_port_client(
       "localhost", port, "", nullptr, false);
@@ -92,7 +174,7 @@ TEST(ThriftServer, Connectivity) {
   ASSERT_OK(wrong_port_client.Open());
 }
 
-TEST(SslTest, Connectivity) {
+TEST_P(ThriftParamsTest, SslConnectivity) {
   int port = GetServerPort();
   // Start a server using SSL and confirm that an SSL client can connect, while a non-SSL
   // client cannot.
