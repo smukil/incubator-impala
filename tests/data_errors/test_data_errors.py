@@ -24,7 +24,7 @@ import random
 
 from tests.beeswax.impala_beeswax import ImpalaBeeswaxException
 from tests.common.impala_test_suite import ImpalaTestSuite
-from tests.common.skip import SkipIf, SkipIfS3, SkipIfLocal
+from tests.common.skip import SkipIf, SkipIfS3, SkipIfADLS, SkipIfLocal
 from tests.common.test_dimensions import create_exec_option_dimension
 
 class TestDataErrors(ImpalaTestSuite):
@@ -66,6 +66,7 @@ class TestHdfsFileOpenFailErrors(ImpalaTestSuite):
 
 
 @SkipIfS3.qualified_path
+@SkipIfADLS.qualified_path
 class TestHdfsScanNodeErrors(TestDataErrors):
   @classmethod
   def add_test_dimensions(cls):
@@ -83,6 +84,7 @@ class TestHdfsScanNodeErrors(TestDataErrors):
     self.run_test_case('DataErrorsTest/hdfs-scan-node-errors', vector)
 
 @SkipIfS3.qualified_path
+@SkipIfADLS.qualified_path
 @SkipIfLocal.qualified_path
 class TestHdfsSeqScanNodeErrors(TestHdfsScanNodeErrors):
   @classmethod
@@ -97,6 +99,7 @@ class TestHdfsSeqScanNodeErrors(TestHdfsScanNodeErrors):
 
 
 @SkipIfS3.qualified_path
+@SkipIfADLS.qualified_path
 class TestHdfsRcFileScanNodeErrors(TestHdfsScanNodeErrors):
   @classmethod
   def add_test_dimensions(cls):
