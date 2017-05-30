@@ -101,6 +101,13 @@ static int GetFilesystemNameLength(const char* path) {
   return after_authority - path;
 }
 
+bool IsADLSPath(const char* path) {
+  if (strstr(path, ":/") == NULL) {
+    return ExecEnv::GetInstance()->default_fs().compare(0, 6, "adl://") == 0;
+  }
+  return strncmp(path, "adl://", 6) == 0;
+}
+
 bool FilesystemsMatch(const char* path_a, const char* path_b) {
   int fs_a_name_length = GetFilesystemNameLength(path_a);
   int fs_b_name_length = GetFilesystemNameLength(path_b);

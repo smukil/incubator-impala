@@ -399,6 +399,10 @@ int64_t DiskIoMgr::ScanRange::MaxReadChunkSize() const {
     DCHECK(IsS3APath(file()));
     return 128 * 1024;
   }
+  if (disk_id_ == io_mgr_->RemoteADLSDiskId()) {
+    DCHECK(IsADLSPath(file()));
+    return 128 * 1024;
+  }
   // The length argument of hdfsRead() is an int. Ensure we don't overflow it.
   return numeric_limits<int>::max();
 }
