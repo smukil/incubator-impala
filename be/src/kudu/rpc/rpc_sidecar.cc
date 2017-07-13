@@ -34,6 +34,7 @@ class SliceSidecar : public RpcSidecar {
  public:
   explicit SliceSidecar(Slice slice) : slice_(slice) { }
   Slice AsSlice() const override { return slice_; }
+  int32_t sidecar_id() const { return -1; }
 
  private:
   const Slice slice_;
@@ -43,7 +44,7 @@ class FaststringSidecar : public RpcSidecar {
  public:
   explicit FaststringSidecar(unique_ptr<faststring> data) : data_(std::move(data)) { }
   Slice AsSlice() const override { return *data_; }
-
+  int32_t sidecar_id() const { return -1; }
  private:
   const unique_ptr<faststring> data_;
 };
@@ -51,7 +52,8 @@ class FaststringSidecar : public RpcSidecar {
 class SharedPtrSidecar : public RpcSidecar {
  public:
   explicit SharedPtrSidecar(shared_ptr<faststring> data) : data_(std::move(data)) { }
-  Slice AsSlice() const override { return *data_; }
+  Slice AsSlice() const override { return Slice(*data_, data_->random_id()); }
+  int32_t sidecar_id() const { return data_->random_id(); }
 
  private:
   const shared_ptr<faststring> data_;

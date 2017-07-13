@@ -215,6 +215,9 @@ Status RowBatch::Serialize(OutboundProtoRowBatch* output_batch, bool full_dedup)
     if (LIKELY(compressed_size < size)) {
       output_batch->compressed_tuple_data->resize(compressed_size);
       output_batch->header.set_compression_type(THdfsCompression::LZ4);
+      output_batch->compressed_tuple_data->get_new_random_id();
+    } else {
+      output_batch->tuple_data->get_new_random_id();
     }
     // Don't free output_batch->tuple_data here - we'll re-use it the next time we
     // serialize a row batch to 'output_batch'.

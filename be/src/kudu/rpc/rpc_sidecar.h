@@ -59,6 +59,7 @@ class RpcSidecar {
 
   // Returns a Slice representation of the sidecar's data.
   virtual Slice AsSlice() const = 0;
+  virtual int32_t sidecar_id() const = 0;
   virtual ~RpcSidecar() { }
 };
 

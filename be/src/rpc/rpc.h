@@ -154,6 +154,17 @@ class Rpc {
     ExecuteAsyncHelper(rpc_method, req, resp, 0, user_callback, std::move(params_), mgr_);
   }
 
+  template <typename RPCMETHOD, typename REQ, typename RESP, typename CALLBACKB>
+  void ExecuteAsyncTransmitData(
+      const RPCMETHOD& rpc_method, REQ* req, RESP* resp, const CALLBACKB& user_callback) {
+    Status status = CheckConfiguration();
+    if (!status.ok()) {
+      user_callback(status, req, resp, nullptr);
+      return;
+    }
+    ExecuteAsyncHelper(rpc_method, req, resp, 0, user_callback, std::move(params_), mgr_, true);
+  }
+
   /// Executes this RPC. If the remote service is too busy, execution is re-attempted up
   /// to a fixed number of times, after which an error is returned. Retries are attempted
   /// only if the remote server signals that it is too busy. Retries are spaced by the
@@ -306,11 +317,12 @@ class Rpc {
   template <typename RPCMETHOD, typename REQ, typename RESP, typename CALLBACK>
   static void ExecuteAsyncHelper(const RPCMETHOD& rpc_method, REQ* req, RESP* resp,
       int num_attempts, CALLBACK user_callback, std::shared_ptr<RpcParams> params,
-      RpcMgr* mgr) {
+      RpcMgr* mgr, bool is_transmit_data = false) {
     using RpcController = kudu::rpc::RpcController;
     std::unique_ptr<RpcController> controller = std::make_unique<RpcController>();
     RpcController* controller_ptr = controller.get();
     Status status = InitController(controller_ptr, *params);
+    controller_ptr->is_transmit_data_ = is_transmit_data;
 
     ++num_attempts;
     std::unique_ptr<P> proxy;

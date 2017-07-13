@@ -370,8 +370,15 @@ void Connection::QueueOutboundCall(const shared_ptr<OutboundCall> &call) {
 
   TransferCallbacks *cb = new CallTransferCallbacks(call);
   awaiting_response_[call_id] = car.release();
+  /*if (call->is_transmit_data_) {
+    for (auto& slice: slices_tmp_) {
+      if (slice.sidecar_id() != -1) {
+        LOG (INFO) << "Queuing outbound TransmitData sidecar: " << slice.sidecar_id();
+      }
+    }
+  }*/
   QueueOutbound(gscoped_ptr<OutboundTransfer>(
-      OutboundTransfer::CreateForCallRequest(call_id, slices_tmp_, cb)));
+      OutboundTransfer::CreateForCallRequest(call_id, slices_tmp_, cb, call->is_transmit_data_)));
 }
 
 // Callbacks for sending an RPC call response from the server.

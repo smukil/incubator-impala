@@ -223,6 +223,8 @@ class RpcController {
   // to this request.
   Status AddOutboundSidecar(std::unique_ptr<RpcSidecar> car, int* idx);
 
+  bool is_transmit_data_ = false;
+
  private:
   friend class OutboundCall;
   friend class Proxy;

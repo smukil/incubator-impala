@@ -46,6 +46,9 @@ message RowBatchPb {
 
   // Of type CatalogObjects.THdfsCompression (TODO(KRPC): native enum)
   optional int32 compression_type = 6;
+
+  // Checksum of tuple_data
+  optional int32 tuple_checksum = 7;
 }
 
 // All fields are required in V1.

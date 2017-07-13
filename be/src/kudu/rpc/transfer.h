@@ -120,7 +120,7 @@ class OutboundTransfer : public boost::intrusive::list_base_hook<> {
   // Create an outbound transfer for a call request.
   static OutboundTransfer* CreateForCallRequest(int32_t call_id,
                                                 const std::vector<Slice> &payload,
-                                                TransferCallbacks *callbacks);
+                                                TransferCallbacks *callbacks, bool is_transmit_data=false);
 
   // Create an outbound transfer for a call response.
   // See above for details.
@@ -160,10 +160,12 @@ class OutboundTransfer : public boost::intrusive::list_base_hook<> {
     return call_id_;
   }
 
+  bool is_transmit_data_;
+
  private:
   OutboundTransfer(int32_t call_id,
                    const std::vector<Slice> &payload,
-                   TransferCallbacks *callbacks);
+                   TransferCallbacks *callbacks, bool is_transmit_data = false);
 
   // Slices to send. Uses an array here instead of a vector to avoid an expensive
   // vector construction (improved performance a couple percent).

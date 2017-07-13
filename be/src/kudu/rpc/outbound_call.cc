@@ -111,7 +111,9 @@ Status OutboundCall::SerializeTo(vector<Slice>* slices) {
 
   slices->push_back(Slice(header_buf_));
   slices->push_back(Slice(request_buf_));
-  for (const unique_ptr<RpcSidecar>& car : sidecars_) slices->push_back(car->AsSlice());
+  for (const unique_ptr<RpcSidecar>& car : sidecars_) {
+    slices->push_back(car->AsSlice());
+  }
   return Status::OK();
 }
 

@@ -21,6 +21,8 @@
 #include "kudu/util/status.h"
 #include "kudu/util/logging.h"
 
+#include <boost/crc.hpp>
+
 namespace kudu {
 
 Status Slice::check_size(size_t expected_size) const {
@@ -69,6 +71,12 @@ std::string Slice::ToDebugString(size_t max_len) const {
     StringAppendF(&ret, "...<%zd bytes total>", size_);
   }
   return ret;
+}
+
+int Slice::GetChecksum() const {
+  boost::crc_32_type result;
+  result.process_bytes(ToString().data(), ToString().length());
+  return result.checksum();
 }
 
 }  // namespace kudu

@@ -138,8 +138,8 @@ string InboundTransfer::StatusAsString() const {
 OutboundTransfer* OutboundTransfer::CreateForCallRequest(
     int32_t call_id,
     const std::vector<Slice> &payload,
-    TransferCallbacks *callbacks) {
-  return new OutboundTransfer(call_id, payload, callbacks);
+    TransferCallbacks *callbacks, bool is_transmit_data) {
+  return new OutboundTransfer(call_id, payload, callbacks, is_transmit_data);
 }
 
 OutboundTransfer* OutboundTransfer::CreateForCallResponse(const std::vector<Slice> &payload,
@@ -150,8 +150,9 @@ OutboundTransfer* OutboundTransfer::CreateForCallResponse(const std::vector<Slic
 
 OutboundTransfer::OutboundTransfer(int32_t call_id,
                                    const std::vector<Slice> &payload,
-                                   TransferCallbacks *callbacks)
-  : cur_slice_idx_(0),
+                                   TransferCallbacks *callbacks, bool is_transmit_data)
+  : is_transmit_data_(is_transmit_data),
+    cur_slice_idx_(0),
     cur_offset_in_slice_(0),
     callbacks_(callbacks),
     call_id_(call_id),
@@ -181,6 +182,17 @@ void OutboundTransfer::Abort(const Status &status) {
 
 Status OutboundTransfer::SendBuffer(Socket &socket) {
   CHECK_LT(cur_slice_idx_, n_payload_slices_);
+
+  if (is_transmit_data_) {
+    int n = 0;
+    for (auto slice : payload_slices_) {
+      // Ignore header buf and request buf.
+      ++n;
+      if ((n <= 2 || n > n_payload_slices_) || slice.sidecar_id() == -1) continue;
+      LOG (INFO) << "Going to send sidecar(cur_slice=" << cur_slice_idx_ << "): "
+          << slice.sidecar_id() << " | with checksum: " << slice.GetChecksum();
+    }
+  }
 
   int n_iovecs = n_payload_slices_ - cur_slice_idx_;
   struct iovec iovec[n_iovecs];

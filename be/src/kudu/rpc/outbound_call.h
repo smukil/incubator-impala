@@ -215,6 +215,8 @@ class OutboundCall {
     return header_.call_id();
   }
 
+  bool is_transmit_data_ = false;
+
  private:
   friend class RpcController;
 

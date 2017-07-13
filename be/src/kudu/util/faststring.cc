@@ -20,6 +20,7 @@
 #include <glog/logging.h>
 #include <memory>
 
+#include <boost/crc.hpp>
 namespace kudu {
 
 void faststring::GrowByAtLeast(size_t count) {
@@ -67,6 +68,12 @@ void faststring::ShrinkToFitInternal() {
     data_ = newdata.release();
     capacity_ = len_;
   }
+}
+
+int faststring::GetChecksum() const {
+  boost::crc_32_type result;
+  result.process_bytes(ToString().data(), ToString().length());
+  return result.checksum();
 }
 
 } // namespace kudu

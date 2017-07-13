@@ -81,6 +81,7 @@ void Proxy::AsyncRequest(const string& method,
   RemoteMethod remote_method(service_name_, method);
   controller->call_.reset(
       new OutboundCall(conn_id_, remote_method, response, controller, callback));
+  controller->call_->is_transmit_data_ = controller->is_transmit_data_;
   controller->SetRequestParam(req);
 
   // If this fails to queue, the callback will get called immediately

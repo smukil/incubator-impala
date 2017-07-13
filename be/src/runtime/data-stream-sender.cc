@@ -249,8 +249,16 @@ Status DataStreamSender::Channel::SendSerializedBatch(
   int idx;
   if (batch->header.compression_type() == THdfsCompression::LZ4) {
     rpc.AddSidecar(batch->compressed_tuple_data, &idx);
+    int checksum = batch->compressed_tuple_data->GetChecksum();
+    batch->header.set_tuple_checksum(checksum);
+    LOG (INFO) << "Adding compressed_tuple_data sidecar with ID: " <<
+        batch->compressed_tuple_data->random_id() << " | and checksum: " << checksum << "\n" << GetStackTrace();
   } else {
     rpc.AddSidecar(batch->tuple_data, &idx);
+    int checksum = batch->tuple_data->GetChecksum();
+    batch->header.set_tuple_checksum(checksum);
+    LOG (INFO) << "Adding tuple_data sidecar with ID: " <<
+        batch->tuple_data->random_id() << " | and checksum: " << checksum;
   }
   batch->header.set_tuple_data_sidecar_idx(idx);
 
@@ -263,7 +271,7 @@ Status DataStreamSender::Channel::SendSerializedBatch(
   rpc.SetMaxAttempts(numeric_limits<int32_t>::max()) // Retry until failure or success.
      .SetRetryInterval(10)
      .SetTimeout(MonoDelta::FromMilliseconds(numeric_limits<int32_t>::max()))
-     .ExecuteAsync(&DataStreamServiceProxy::TransmitDataAsync, request.release(),
+     .ExecuteAsyncTransmitData(&DataStreamServiceProxy::TransmitDataAsync, request.release(),
          response.release(), rpc_complete_callback);
   return Status::OK();
 }

@@ -17,6 +17,8 @@
 #ifndef KUDU_UTIL_FASTSTRING_H
 #define KUDU_UTIL_FASTSTRING_H
 
+#include <boost/random/mersenne_twister.hpp>
+#include <random>
 #include <string>
 
 #include "kudu/gutil/dynamic_annotations.h"
@@ -38,6 +40,7 @@ class faststring {
     data_(initial_data_),
     len_(0),
     capacity_(kInitialCapacity) {
+    random_id_ = -1;
   }
 
   // Construct a string with the given capacity, in bytes.
@@ -49,6 +52,8 @@ class faststring {
       data_ = new uint8_t[capacity];
       capacity_ = capacity;
     }
+    boost::mt19937 generator(rd());
+    random_id_ = generator();
     ASAN_POISON_MEMORY_REGION(data_, capacity_);
   }
 
@@ -105,6 +110,11 @@ class faststring {
   void reserve(size_t newcapacity) {
     if (PREDICT_TRUE(newcapacity <= capacity_)) return;
     GrowArray(newcapacity);
+  }
+
+  void get_new_random_id() {
+    boost::mt19937 generator(rd());
+    random_id_ = generator(); 
   }
 
   // Append the given data to the string, resizing capacity as necessary.
@@ -220,6 +230,10 @@ class faststring {
                        len_);
   }
 
+  int32_t random_id() const { return random_id_; }
+
+  int GetChecksum() const;
+
  private:
   DISALLOW_COPY_AND_ASSIGN(faststring);
 
@@ -249,6 +263,8 @@ class faststring {
   uint8_t initial_data_[kInitialCapacity];
   size_t len_;
   size_t capacity_;
+  int32_t random_id_;
+  std::random_device rd;
 };
 
 } // namespace kudu

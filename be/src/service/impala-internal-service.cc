@@ -80,6 +80,14 @@ void DataStreamService::TransmitData(const TransmitDataRequestPb* request,
   }
   if (status.ok()) {
     batch.header = request->row_batch_header();
+    int recompute_checksum = batch.tuple_data.GetChecksum();
+    int expected = batch.header.tuple_checksum();
+    if (expected != recompute_checksum) {
+      LOG (INFO) << "ERROR ERROR ERROR ERROR: Checksums do not match!. Expected: "
+                 << batch.header.tuple_checksum() << " | Got: " << recompute_checksum;
+    } else {
+      LOG (INFO) << "Checksums match!";
+    }
     auto payload = make_unique<TransmitDataCtx>(batch, context, request, response);
     // AddData() is guaranteed to eventually respond to this RPC so we don't do it here.
     ExecEnv::GetInstance()->stream_mgr()->AddData(finst_id, move(payload));

@@ -66,7 +66,11 @@ struct OutboundProtoRowBatch {
   /// header.compression_type() will be set to something other than NONE. Otherwise this
   /// is not safe to read, as its length may be incorrectly set.
   std::shared_ptr<kudu::faststring> compressed_tuple_data =
-      std::make_shared<kudu::faststring>();
+      std::shared_ptr<kudu::faststring>(new kudu::faststring(), [](auto p) {
+        LOG (INFO) << "DELETING COMPRESSED_TUPLE_DATA with ID: " << p->random_id() <<
+            " | and checksum: " << p->GetChecksum();
+        delete p;
+      });
 
   /// Returns size of buffered data to be sent on the wire.
   int GetSize() {

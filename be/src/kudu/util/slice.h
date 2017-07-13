@@ -92,6 +92,12 @@ class KUDU_EXPORT Slice {
       size_(s.size()) {
   }
 
+  Slice(const faststring &s, int32_t sidecar_id) // NOLINT(runtime/explicit)
+    : data_(s.data()),
+      size_(s.size()),
+      sidecar_id_(sidecar_id) {
+  }
+  
   /// Create a slice that refers to the contents of a string piece.
   ///
   /// @param [in] s
@@ -113,6 +119,8 @@ class KUDU_EXPORT Slice {
 
   /// @return @c true iff the length of the referenced data is zero.
   bool empty() const { return size_ == 0; }
+
+  int32_t sidecar_id() const { return sidecar_id_; }
 
   /// @pre n < size()
   ///
@@ -222,6 +230,8 @@ class KUDU_EXPORT Slice {
     }
   }
 
+  int GetChecksum() const;
+
  private:
   friend bool operator==(const Slice& x, const Slice& y);
 
@@ -243,6 +253,7 @@ class KUDU_EXPORT Slice {
 
   const uint8_t* data_;
   size_t size_;
+  int32_t sidecar_id_ = -1;
 
   // Intentionally copyable
 };
