@@ -187,10 +187,12 @@ Status DataStreamSender::Channel::SendSerializedBatch(
   RETURN_IF_ERROR(WaitForClearChannel());
   {
     lock_guard<SpinLock> l(lock_);
-    // Return without signalling an error if the upstream receiver has completed, or if
-    // this instance is cancelled or closed..
-    if (recvr_gone_ || parent_->closed_ || parent_->state_->is_cancelled()) {
+    // Return if the upstream receiver has completed, or if this instance is cancelled
+    // or closed.
+    if (recvr_gone_ || parent_->closed_) {
       return Status::OK();
+    } else if (parent_->state_->is_cancelled()) {
+      return Status::CANCELLED;
     }
     rpc_in_flight_ = true;
   }
