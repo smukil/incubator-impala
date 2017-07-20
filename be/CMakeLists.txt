@@ -86,6 +86,8 @@ SET(CXX_FLAGS_DEBUG "${CXX_FLAGS_DEBUG} -Werror")
 SET(CXX_FLAGS_RELEASE "${CXX_GCC_FLAGS} -O3 -DNDEBUG -gdwarf-2")
 SET(CXX_FLAGS_ADDRESS_SANITIZER
   "${CXX_CLANG_FLAGS} -O1 -g -fsanitize=address -fno-omit-frame-pointer -DADDRESS_SANITIZER")
+SET(CXX_FLAGS_FUZZER
+  "${CXX_CLANG_FLAGS} -O1 -g -fsanitize=address -fsanitize-coverage=trace-pc-guard -fno-omit-frame-pointer -DADDRESS_SANITIZER")
 
 # Set the flags to the undefined behavior sanitizer, also known as "ubsan"
 # Turn on sanitizer and debug symbols to get stack traces:
@@ -122,6 +124,8 @@ elseif ("${CMAKE_BUILD_TYPE}" STREQUAL "RELEASE")
   SET(CMAKE_CXX_FLAGS ${CXX_FLAGS_RELEASE})
 elseif ("${CMAKE_BUILD_TYPE}" STREQUAL "ADDRESS_SANITIZER")
   SET(CMAKE_CXX_FLAGS "${CXX_FLAGS_ADDRESS_SANITIZER}")
+elseif ("${CMAKE_BUILD_TYPE}" STREQUAL "FUZZER")
+  SET(CMAKE_CXX_FLAGS "${CXX_FLAGS_FUZZER}")
 elseif ("${CMAKE_BUILD_TYPE}" STREQUAL "TIDY")
   SET(CMAKE_CXX_FLAGS "${CXX_FLAGS_TIDY}")
 elseif ("${CMAKE_BUILD_TYPE}" STREQUAL "UBSAN")
@@ -148,6 +152,7 @@ set(RULE_LAUNCH_PREFIX)
 if (CCACHE AND NOT DEFINED ENV{DISABLE_CCACHE})
   set(RULE_LAUNCH_PREFIX ccache)
   if ("${CMAKE_BUILD_TYPE}" STREQUAL "ADDRESS_SANITIZER"
+      OR "${CMAKE_BUILD_TYPE}" STREQUAL "FUZZER"
       OR "${CMAKE_BUILD_TYPE}" STREQUAL "TIDY"
       OR "${CMAKE_BUILD_TYPE}" STREQUAL "UBSAN")
     # Need to set CCACHE_CPP so that ccache calls clang with the original source file for
@@ -273,6 +278,7 @@ add_definitions(-fPIC)
 # set compile output directory
 if ("${CMAKE_BUILD_TYPE}" STREQUAL "DEBUG" OR
     "${CMAKE_BUILD_TYPE}" STREQUAL "ADDRESS_SANITIZER" OR
+    "${CMAKE_BUILD_TYPE}" STREQUAL "FUZZER" OR
     "${CMAKE_BUILD_TYPE}" STREQUAL "UBSAN")
   set(BUILD_OUTPUT_ROOT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/build/debug/")
 else()
@@ -388,7 +394,8 @@ set (IMPALA_LINK_LIBS ${IMPALA_LINK_LIBS}
 # sanitizer build. Address sanitizer is incompatible with tcmalloc (they both intercept
 # malloc/free)
 set (IMPALA_LINK_LIBS_NO_TCMALLOC ${IMPALA_LINK_LIBS})
-if (NOT "${CMAKE_BUILD_TYPE}" STREQUAL "ADDRESS_SANITIZER")
+if (NOT "${CMAKE_BUILD_TYPE}" STREQUAL "ADDRESS_SANITIZER" AND
+    NOT "${CMAKE_BUILD_TYPE}" STREQUAL "FUZZER")
   set (IMPALA_LINK_LIBS ${IMPALA_LINK_LIBS} tcmallocstatic)
 endif()
 

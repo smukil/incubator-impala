@@ -112,6 +112,7 @@ class HdfsAvroScanner : public BaseSequenceScanner {
 
  private:
   friend class HdfsAvroScannerTest;
+  friend class HdfsAvroScannerTestFuzz;
 
   struct AvroFileHeader : public BaseSequenceScanner::FileHeader {
     /// The root of the file schema tree (i.e. the top-level record schema of the file)

@@ -60,6 +60,7 @@ BUILD_ASAN=0
 BUILD_FE_ONLY=0
 BUILD_TIDY=0
 BUILD_UBSAN=0
+BUILD_LIBFUZZ=0
 # Export MAKE_CMD so it is visible in scripts that invoke make, e.g. copy-udfs-udas.sh
 export MAKE_CMD=make
 LZO_CMAKE_ARGS=
@@ -117,6 +118,9 @@ do
       ;;
     -ubsan)
       BUILD_UBSAN=1
+      ;;
+    -libfuzz)
+      BUILD_LIBFUZZ=1
       ;;
     -testpairwise)
       EXPLORATION_STRATEGY=pairwise
@@ -185,6 +189,7 @@ do
       echo "[-release] : Release build [Default: debug]"
       echo "[-codecoverage] : Build with code coverage [Default: False]"
       echo "[-asan] : Address sanitizer build [Default: False]"
+      echo "[-libfuzz] : Fuzzer build [Default: False]"
       echo "[-tidy] : clang-tidy build [Default: False]"
       echo "[-ubsan] : Undefined behavior build [Default: False]"
       echo "[-skiptests] : Skips execution of all tests"
@@ -262,6 +267,14 @@ if [[ ${BUILD_ASAN} -eq 1 ]]; then
   fi
   CMAKE_BUILD_TYPE=ADDRESS_SANITIZER
 fi
+if [[ ${BUILD_LIBFUZZ} -eq 1 ]]; then
+  if [[ "${CMAKE_BUILD_TYPE}" != "Debug" ]]; then
+    echo "libfuzzer build not supported for build type: ${CMAKE_BUILD_TYPE}"
+    exit 1
+  fi
+  CMAKE_BUILD_TYPE=FUZZER
+fi
+
 if [[ ${BUILD_TIDY} -eq 1 ]]; then
   CMAKE_BUILD_TYPE=TIDY
 fi

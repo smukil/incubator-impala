@@ -101,6 +101,7 @@ class DataStreamSender : public DataSink {
 
  protected:
   friend class DataStreamTest;
+  friend class DataStreamTestFuzz;
 
   virtual Status Init(const std::vector<TExpr>& thrift_output_exprs,
       const TDataSink& tsink, RuntimeState* state);

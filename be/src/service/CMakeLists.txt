@@ -50,6 +50,10 @@ add_executable(impalad
   daemon-main.cc
 )
 
+add_executable(fuzz_target
+  fuzz_target.cc
+)
+
 # All Impala daemons run from the same binary. The code that is run is determined by the
 # name (i.e. argv[0]) of the command that executes the binary, so we create symlinks for
 # statestored and catalogd.
@@ -67,6 +71,16 @@ set_target_properties(impalad PROPERTIES LINK_FLAGS -rdynamic)
 target_link_libraries(impalad
   ${JAVA_JSIG_LIBRARY}
   ${IMPALA_LINK_LIBS}
+)
+
+# This permits libraries loaded by dlopen to link to the symbols in the program.
+set_target_properties(fuzz_target PROPERTIES LINK_FLAGS -rdynamic)
+
+target_link_libraries(fuzz_target
+  ${JAVA_JSIG_LIBRARY}
+  ${IMPALA_LINK_LIBS}
+  /home/dev/libFuzzer.a
+  gtest
 )
 
 ADD_BE_TEST(session-expiry-test session-expiry-test.cc)

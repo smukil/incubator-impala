@@ -193,6 +193,8 @@ if ("${CMAKE_BUILD_TYPE}" STREQUAL "DEBUG"
     OR "${CMAKE_BUILD_TYPE}" STREQUAL "UBSAN")
   # Use the LLVM libaries with assertions for debug builds.
   set(LLVM_ROOT ${LLVM_DEBUG_ROOT})
+elseif ("${CMAKE_BUILD_TYPE}" STREQUAL "FUZZER")
+  set(LLVM_ROOT ${LLVM_DEBUG_ROOT})
 endif()
 message(STATUS "LLVM_ROOT: " ${LLVM_ROOT})
 

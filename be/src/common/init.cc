@@ -142,6 +142,8 @@ static scoped_ptr<impala::Thread> pause_monitor;
     if (env != NULL && env->process_mem_tracker() != NULL) {
       env->process_mem_tracker()->RefreshConsumptionFromMetric();
     }
+#else
+  LOG (INFO) << "ADDRESS SANITIZER ENABLED";
 #endif
   }
 }
