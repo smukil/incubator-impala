@@ -252,8 +252,10 @@ class ImpalaServer : public ImpalaServiceIf,
   /// ImpalaInternalService and DataStreamService rpcs
   void ReportExecStatus(TReportExecStatusResult& return_val,
       const TReportExecStatusParams& params);
-  void UpdateFilter(
-      int32_t filter_id, const TUniqueId& query_id, const ProtoBloomFilter& filter);
+  void TransmitData(TOldTransmitDataResult& return_val,
+      const TOldTransmitDataParams& params);
+  void UpdateFilter(TUpdateFilterResult& return_val,
+      const TUpdateFilterParams& params);
 
   /// Generates a unique id for this query and sets it in the given query context.
   /// Prepares the given query context by populating fields required for evaluating

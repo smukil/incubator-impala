@@ -341,10 +341,10 @@ void QueryState::Cancel() {
 }
 
 void QueryState::PublishFilter(int32_t filter_id, int fragment_idx,
-    const ProtoBloomFilter& proto_bloom_filter) {
+    const TBloomFilter& thrift_bloom_filter) {
   if (!instances_prepared_promise_.Get().ok()) return;
   DCHECK_EQ(fragment_map_.count(fragment_idx), 1);
   for (FragmentInstanceState* fis: fragment_map_[fragment_idx]) {
-    fis->PublishFilter(filter_id, proto_bloom_filter);
+    fis->PublishFilter(filter_id, thrift_bloom_filter);
   }
 }

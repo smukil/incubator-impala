@@ -40,6 +40,7 @@ template <typename K, typename V> class FixedSizeHashTable;
 class MemTracker;
 class RowBatchSerializeTest;
 class RuntimeState;
+class TRowBatch;
 class Tuple;
 class TupleRow;
 class TupleDescriptor;
@@ -142,6 +143,7 @@ class RowBatch {
   /// tracker cannot be NULL.
   RowBatch(const RowDescriptor* row_desc, int capacity, MemTracker* tracker);
 
+  /// Protobuf version:
   /// Populate a row batch from input_batch by copying input_batch's
   /// tuple_data into the row batch's mempool and converting all offsets
   /// in the data back into pointers.
@@ -149,6 +151,8 @@ class RowBatch {
   /// (so that we don't need to make yet another copy)
   RowBatch(const RowDescriptor* row_desc, const InboundProtoRowBatch& input_batch,
       MemTracker* tracker);
+  RowBatch(
+      const RowDescriptor* row_desc, const TRowBatch& input_batch, MemTracker* tracker);
 
   /// Releases all resources accumulated at this row batch.  This includes
   ///  - tuple_ptrs
@@ -363,6 +367,10 @@ class RowBatch {
   /// whether tuple_data is compressed. If an in-flight row is present in this row batch,
   /// it is ignored. This function does not Reset().
   Status Serialize(OutboundProtoRowBatch* output_batch);
+  Status Serialize(TRowBatch* output_batch);
+
+  /// Utility function: returns total size of batch.
+  static int GetBatchSize(const TRowBatch& batch);
 
   int ALWAYS_INLINE num_rows() const { return num_rows_; }
   int ALWAYS_INLINE capacity() const { return capacity_; }
@@ -414,6 +422,7 @@ class RowBatch {
 
   /// Overload for testing that allows the test to force the deduplication level.
   Status Serialize(OutboundProtoRowBatch* output_batch, bool full_dedup);
+  Status Serialize(TRowBatch* output_batch, bool full_dedup);
 
   typedef FixedSizeHashTable<Tuple*, int> DedupMap;
 
@@ -426,6 +435,8 @@ class RowBatch {
 
   void SerializeInternal(
       int64_t size, DedupMap* distinct_tuples, OutboundProtoRowBatch* output_batch);
+  void SerializeInternal(int64_t size, DedupMap* distinct_tuples,
+      TRowBatch* output_batch);
 
   /// All members below need to be handled in RowBatch::AcquireState()
 
@@ -498,6 +509,16 @@ class RowBatch {
 
   /// Pages attached to this row batch. See AddBuffer() for ownership semantics.
   std::vector<BufferInfo> buffers_;
+
+  /// Only used in for the Thrift RowBatch.
+  /// String to write compressed tuple data to in Serialize().
+  /// This is a string so we can swap() with the string in the TRowBatch we're serializing
+  /// to (we don't compress directly into the TRowBatch in case the compressed data is
+  /// longer than the uncompressed data). Swapping avoids copying data to the TRowBatch
+  /// and avoids excess memory allocations: since we reuse RowBatchs and TRowBatchs, and
+  /// assuming all row batches are roughly the same size, all strings will eventually be
+  /// allocated to the right size.
+  std::string compression_scratch_;
 };
 }
 

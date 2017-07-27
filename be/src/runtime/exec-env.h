@@ -37,6 +37,7 @@ class AdmissionController;
 class BufferPool;
 class CallableThreadPool;
 class DataStreamMgr;
+class OldDataStreamMgr;
 class DiskIoMgr;
 class QueryExecMgr;
 class Frontend;
@@ -68,8 +69,9 @@ class ExecEnv {
  public:
   ExecEnv();
 
-  ExecEnv(const std::string& hostname, int backend_port, int data_svc_port,
-      int webserver_port, const std::string& statestore_host, int statestore_port);
+  ExecEnv(const std::string& hostname, int backend_port, int state_store_subscriber_port,
+      int data_svc_port, int webserver_port, const std::string& statestore_host,
+      int statestore_port);
 
   /// Returns the first created exec env instance. In a normal impalad, this is
   /// the only instance. In test setups with multiple ExecEnv's per process,
@@ -90,6 +92,8 @@ class ExecEnv {
   void SetImpalaServer(ImpalaServer* server) { impala_server_ = server; }
 
   DataStreamMgr* stream_mgr() { return stream_mgr_.get(); }
+  OldDataStreamMgr* old_stream_mgr() { return old_stream_mgr_.get(); }
+
   ImpalaBackendClientCache* impalad_client_cache() {
     return impalad_client_cache_.get();
   }
@@ -108,6 +112,7 @@ class ExecEnv {
   ImpalaServer* impala_server() { return impala_server_; }
   Frontend* frontend() { return frontend_.get(); }
   RequestPoolService* request_pool_service() { return request_pool_service_.get(); }
+  CallableThreadPool* rpc_pool() { return async_rpc_pool_.get(); }
   QueryExecMgr* query_exec_mgr() { return query_exec_mgr_.get(); }
   PoolMemTrackerRegistry* pool_mem_trackers() { return pool_mem_trackers_.get(); }
   ReservationTracker* buffer_reservation() { return buffer_reservation_.get(); }
@@ -148,6 +153,7 @@ class ExecEnv {
   boost::scoped_ptr<ObjectPool> obj_pool_;
   boost::scoped_ptr<MetricGroup> metrics_;
   boost::scoped_ptr<DataStreamMgr> stream_mgr_;
+  boost::scoped_ptr<OldDataStreamMgr> old_stream_mgr_;
   boost::scoped_ptr<Scheduler> scheduler_;
   boost::scoped_ptr<AdmissionController> admission_controller_;
   boost::scoped_ptr<StatestoreSubscriber> statestore_subscriber_;
@@ -164,6 +170,7 @@ class ExecEnv {
   boost::scoped_ptr<RequestPoolService> request_pool_service_;
   boost::scoped_ptr<Frontend> frontend_;
   boost::scoped_ptr<CallableThreadPool> exec_rpc_thread_pool_;
+  boost::scoped_ptr<CallableThreadPool> async_rpc_pool_;
   boost::scoped_ptr<QueryExecMgr> query_exec_mgr_;
 
   /// Query-wide buffer pool and the root reservation tracker for the pool. The

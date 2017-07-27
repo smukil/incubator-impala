@@ -22,14 +22,10 @@
 #include <algorithm>
 
 #include "common/logging.h"
-#include "kudu/util/faststring.h"
 #include "runtime/runtime-state.h"
-#include "service/data_stream_service.pb.h"
 #include "util/hash-util.h"
 
 using namespace std;
-using kudu::faststring;
-using kudu::Slice;
 
 namespace impala {
 
@@ -57,10 +53,10 @@ BloomFilter::BloomFilter(const int log_heap_space)
   memset(directory_, 0, alloc_size);
 }
 
-BloomFilter::BloomFilter(const ProtoBloomFilter& proto)
-  : BloomFilter(proto.header.log_heap_space()) {
-  DCHECK_EQ(proto.directory.size(), directory_size());
-  memcpy(directory_, &proto.directory.data()[0], proto.directory.size());
+BloomFilter::BloomFilter(const TBloomFilter& thrift)
+    : BloomFilter(thrift.log_heap_space) {
+  DCHECK_EQ(thrift.directory.size(), directory_size());
+  memcpy(directory_, &thrift.directory[0], thrift.directory.size());
 }
 
 BloomFilter::~BloomFilter() {
@@ -70,23 +66,20 @@ BloomFilter::~BloomFilter() {
   }
 }
 
-void BloomFilter::ToProto(ProtoBloomFilter* proto) const {
-  proto->header.set_log_heap_space(log_num_buckets_ + LOG_BUCKET_BYTE_SIZE);
-  proto->directory_data->resize(0);
-  proto->directory_data->append(
-      reinterpret_cast<const char*>(directory_), directory_size());
-  proto->directory = Slice(*proto->directory_data);
-  proto->header.set_always_true(false);
+void BloomFilter::ToThrift(TBloomFilter* thrift) const {
+  thrift->log_heap_space = log_num_buckets_ + LOG_BUCKET_BYTE_SIZE;
+  string tmp(reinterpret_cast<const char*>(directory_), directory_size());
+  thrift->directory.swap(tmp);
+  thrift->always_true = false;
 }
 
-void BloomFilter::ToProto(const BloomFilter* filter, ProtoBloomFilter* proto) {
-  DCHECK(proto != nullptr);
-  if (filter == nullptr) {
-    proto->header.set_always_true(true);
-    proto->header.set_log_heap_space(0);
+void BloomFilter::ToThrift(const BloomFilter* filter, TBloomFilter* thrift) {
+  DCHECK(thrift != NULL);
+  if (filter == NULL) {
+    thrift->always_true = true;
     return;
   }
-  filter->ToProto(proto);
+  filter->ToThrift(thrift);
 }
 
 // The SIMD reinterpret_casts technically violate C++'s strict aliasing rules. However, we
@@ -177,18 +170,17 @@ OrEqualArrayAvx(size_t n, const char* __restrict__ in, char* __restrict__ out) {
 }
 } //namespace
 
-void BloomFilter::Or(const ProtoBloomFilter& in, ProtoBloomFilter* out) {
+void BloomFilter::Or(const TBloomFilter& in, TBloomFilter* out) {
   DCHECK(out != NULL);
-  DCHECK_EQ(in.header.log_heap_space(), out->header.log_heap_space());
+  DCHECK_EQ(in.log_heap_space, out->log_heap_space);
   if (&in == out) return;
-  out->header.set_always_true(out->header.always_true() || in.header.always_true());
-  if (out->header.always_true()) {
-    out->directory_data->resize(0);
-    out->directory = Slice(*out->directory_data);
+  out->always_true |= in.always_true;
+  if (out->always_true) {
+    out->directory.resize(0);
     return;
   }
   DCHECK_EQ(in.directory.size(), out->directory.size())
-      << "Equal log heap space " << in.header.log_heap_space()
+      << "Equal log heap space " << in.log_heap_space
       << ", but different directory sizes: " << in.directory.size() << ", "
       << out->directory.size();
   // The trivial loop out[i] |= in[i] should auto-vectorize with gcc at -O3, but it is not
@@ -197,15 +189,13 @@ void BloomFilter::Or(const ProtoBloomFilter& in, ProtoBloomFilter* out) {
   //
   // TODO: Tune gcc flags to auto-vectorize the trivial loop instead of hand-vectorizing
   // it. This might not be possible.
-  char* output = reinterpret_cast<char*>(&(out->directory.mutable_data()[0]));
-  const char* input = reinterpret_cast<const char*>(&in.directory.data()[0]);
   if (CpuInfo::IsSupported(CpuInfo::AVX)) {
-    OrEqualArrayAvx(in.directory.size(), input, output);
+    OrEqualArrayAvx(in.directory.size(), &in.directory[0], &out->directory[0]);
   } else {
-    const __m128i* simd_in = reinterpret_cast<const __m128i*>(input);
+    const __m128i* simd_in = reinterpret_cast<const __m128i*>(&in.directory[0]);
     const __m128i* const simd_in_end =
-        reinterpret_cast<const __m128i*>(input + in.directory.size());
-    __m128i* simd_out = reinterpret_cast<__m128i*>(output);
+        reinterpret_cast<const __m128i*>(&in.directory[0] + in.directory.size());
+    __m128i* simd_out = reinterpret_cast<__m128i*>(&out->directory[0]);
     // in.directory has a size (in bytes) that is a multiple of 32. Since sizeof(__m128i)
     // == 16, we can do two _mm_or_si128's in each iteration without checking array
     // bounds.

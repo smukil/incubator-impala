@@ -48,6 +48,7 @@
 #include "runtime/runtime-state.h"
 #include "runtime/query-state.h"
 #include "runtime/data-stream-mgr.h"
+#include "runtime/old-data-stream-mgr.h"
 #include "runtime/mem-tracker.h"
 #include "runtime/row-batch.h"
 #include "scheduling/query-schedule.h"
@@ -57,6 +58,7 @@
 #include "gen-cpp/ImpalaInternalService_types.h"
 
 DEFINE_int32(status_report_interval, 5, "interval between profile reports; in seconds");
+DECLARE_bool(use_krpc);
 
 using namespace impala;
 using namespace apache::thrift;
@@ -114,7 +116,11 @@ void FragmentInstanceState::Cancel() {
 
   DCHECK(runtime_state_ != nullptr);
   runtime_state_->set_is_cancelled();
-  runtime_state_->stream_mgr()->Cancel(runtime_state_->fragment_instance_id());
+  if (FLAGS_use_krpc) {
+    runtime_state_->stream_mgr()->Cancel(runtime_state_->fragment_instance_id());
+  } else {
+    runtime_state_->old_stream_mgr()->Cancel(runtime_state_->fragment_instance_id());
+  }
 }
 
 Status FragmentInstanceState::Prepare() {
@@ -430,12 +436,12 @@ Status FragmentInstanceState::WaitForOpen() {
 }
 
 void FragmentInstanceState::PublishFilter(
-    int32_t filter_id, const ProtoBloomFilter& bloom_filter_pb) {
+    int32_t filter_id, const TBloomFilter& thrift_bloom_filter) {
+  VLOG_FILE << "PublishFilter(): instance_id=" << PrintId(instance_id())
+            << " filter_id=" << filter_id;
   // Wait until Prepare() is done, so we know that the filter bank is set up.
   if (!WaitForPrepare().ok()) return;
-
-  runtime_state()->filter_bank()->PublishGlobalFilter(
-      filter_id, bloom_filter_pb);
+  runtime_state_->filter_bank()->PublishGlobalFilter(filter_id, thrift_bloom_filter);
 }
 
 const TQueryCtx& FragmentInstanceState::query_ctx() const {

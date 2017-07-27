@@ -21,6 +21,8 @@
 
 #include "runtime/data-stream-mgr.h"
 #include "runtime/data-stream-recvr.h"
+#include "runtime/old-data-stream-mgr.h"
+#include "runtime/old-data-stream-recvr.h"
 #include "runtime/runtime-state.h"
 #include "runtime/row-batch.h"
 #include "runtime/exec-env.h"
@@ -32,6 +34,7 @@
 #include "common/names.h"
 
 DECLARE_int32(stress_datastream_recvr_delay_ms);
+DECLARE_bool(use_krpc);
 
 using namespace impala;
 
@@ -43,6 +46,7 @@ ExchangeNode::ExchangeNode(
   : ExecNode(pool, tnode, descs),
     num_senders_(0),
     stream_recvr_(),
+    old_stream_recvr_(),
     input_row_desc_(descs, tnode.exchange_node.input_row_tuples,
         vector<bool>(
           tnode.nullable_tuples.begin(),
@@ -78,9 +82,15 @@ Status ExchangeNode::Prepare(RuntimeState* state) {
 
   // TODO: figure out appropriate buffer size
   DCHECK_GT(num_senders_, 0);
-  stream_recvr_ = ExecEnv::GetInstance()->stream_mgr()->CreateRecvr(state,
-      &input_row_desc_, state->fragment_instance_id(), id_, num_senders_,
-      FLAGS_exchg_node_buffer_size_bytes, runtime_profile(), is_merging_);
+  if (FLAGS_use_krpc) {
+    stream_recvr_ = ExecEnv::GetInstance()->stream_mgr()->CreateRecvr(state,
+        &input_row_desc_, state->fragment_instance_id(), id_, num_senders_,
+        FLAGS_exchg_node_buffer_size_bytes, runtime_profile(), is_merging_);
+  } else {
+    old_stream_recvr_ = ExecEnv::GetInstance()->old_stream_mgr()->CreateRecvr(state,
+        &input_row_desc_, state->fragment_instance_id(), id_, num_senders_,
+        FLAGS_exchg_node_buffer_size_bytes, runtime_profile(), is_merging_);
+  }
   if (is_merging_) {
     less_than_.reset(
         new TupleRowComparator(ordering_exprs_, is_asc_order_, nulls_first_));
@@ -107,7 +117,11 @@ Status ExchangeNode::Open(RuntimeState* state) {
     // CreateMerger() will populate its merging heap with batches from the stream_recvr_,
     // so it is not necessary to call FillInputRowBatch().
     RETURN_IF_ERROR(less_than_->Open(pool_, state, expr_mem_pool()));
-    RETURN_IF_ERROR(stream_recvr_->CreateMerger(*less_than_.get()));
+    if (FLAGS_use_krpc) {
+      RETURN_IF_ERROR(stream_recvr_->CreateMerger(*less_than_.get()));
+    } else {
+      RETURN_IF_ERROR(old_stream_recvr_->CreateMerger(*less_than_.get()));
+    }
   } else {
     RETURN_IF_ERROR(FillInputRowBatch(state));
   }
@@ -122,8 +136,13 @@ Status ExchangeNode::Reset(RuntimeState* state) {
 void ExchangeNode::Close(RuntimeState* state) {
   if (is_closed()) return;
   if (less_than_.get() != nullptr) less_than_->Close(state);
-  if (stream_recvr_ != nullptr) stream_recvr_->Close();
-  stream_recvr_.reset();
+  if (FLAGS_use_krpc) {
+    if (stream_recvr_ != nullptr) stream_recvr_->Close();
+    stream_recvr_.reset();
+  } else {
+    if (old_stream_recvr_ != nullptr) old_stream_recvr_->Close();
+    old_stream_recvr_.reset();
+  }
   ScalarExpr::Close(ordering_exprs_);
   ExecNode::Close(state);
 }
@@ -138,7 +157,11 @@ Status ExchangeNode::FillInputRowBatch(RuntimeState* state) {
   Status ret_status;
   {
     SCOPED_TIMER(state->total_network_receive_timer());
-    ret_status = stream_recvr_->GetBatch(&input_batch_);
+    if (FLAGS_use_krpc) {
+      ret_status = stream_recvr_->GetBatch(&input_batch_);
+    } else {
+      ret_status = old_stream_recvr_->GetBatch(&input_batch_);
+    }
   }
   VLOG_FILE << "exch: has batch=" << (input_batch_ == NULL ? "false" : "true")
             << " #rows=" << (input_batch_ != NULL ? input_batch_->num_rows() : 0)
@@ -151,7 +174,11 @@ Status ExchangeNode::GetNext(RuntimeState* state, RowBatch* output_batch, bool* 
   RETURN_IF_ERROR(ExecDebugAction(TExecNodePhase::GETNEXT, state));
   SCOPED_TIMER(runtime_profile_->total_time_counter());
   if (ReachedLimit()) {
-    stream_recvr_->TransferAllResources(output_batch);
+    if (FLAGS_use_krpc) {
+      stream_recvr_->TransferAllResources(output_batch);
+    } else {
+      old_stream_recvr_->TransferAllResources(output_batch);
+    }
     *eos = true;
     return Status::OK();
   } else {
@@ -184,7 +211,11 @@ Status ExchangeNode::GetNext(RuntimeState* state, RowBatch* output_batch, bool* 
       COUNTER_SET(rows_returned_counter_, num_rows_returned_);
 
       if (ReachedLimit()) {
-        stream_recvr_->TransferAllResources(output_batch);
+      if (FLAGS_use_krpc) {
+          stream_recvr_->TransferAllResources(output_batch);
+      } else {
+          old_stream_recvr_->TransferAllResources(output_batch);
+      }
         *eos = true;
         return Status::OK();
       }
@@ -192,7 +223,11 @@ Status ExchangeNode::GetNext(RuntimeState* state, RowBatch* output_batch, bool* 
     }
 
     // we need more rows
-    stream_recvr_->TransferAllResources(output_batch);
+    if (FLAGS_use_krpc) {
+      stream_recvr_->TransferAllResources(output_batch);
+    } else {
+      old_stream_recvr_->TransferAllResources(output_batch);
+    }
     RETURN_IF_ERROR(FillInputRowBatch(state));
     *eos = (input_batch_ == NULL);
     if (*eos) return Status::OK();
@@ -206,7 +241,11 @@ Status ExchangeNode::GetNextMerging(RuntimeState* state, RowBatch* output_batch,
   DCHECK_EQ(output_batch->num_rows(), 0);
   RETURN_IF_CANCELLED(state);
   RETURN_IF_ERROR(QueryMaintenance(state));
-  RETURN_IF_ERROR(stream_recvr_->GetNext(output_batch, eos));
+  if (FLAGS_use_krpc) {
+    RETURN_IF_ERROR(stream_recvr_->GetNext(output_batch, eos));
+  } else {
+    RETURN_IF_ERROR(old_stream_recvr_->GetNext(output_batch, eos));
+  }
 
   while (num_rows_skipped_ < offset_) {
     num_rows_skipped_ += output_batch->num_rows();
@@ -219,7 +258,11 @@ Status ExchangeNode::GetNextMerging(RuntimeState* state, RowBatch* output_batch,
       output_batch->set_num_rows(0);
     }
     if (rows_to_keep > 0 || *eos || output_batch->AtCapacity()) break;
-    RETURN_IF_ERROR(stream_recvr_->GetNext(output_batch, eos));
+    if (FLAGS_use_krpc) {
+      RETURN_IF_ERROR(stream_recvr_->GetNext(output_batch, eos));
+    } else {
+      RETURN_IF_ERROR(old_stream_recvr_->GetNext(output_batch, eos));
+    }
   }
 
   num_rows_returned_ += output_batch->num_rows();
@@ -231,7 +274,13 @@ Status ExchangeNode::GetNextMerging(RuntimeState* state, RowBatch* output_batch,
 
   // On eos, transfer all remaining resources from the input batches maintained
   // by the merger to the output batch.
-  if (*eos) stream_recvr_->TransferAllResources(output_batch);
+  if (*eos) {
+    if (FLAGS_use_krpc) {
+      stream_recvr_->TransferAllResources(output_batch);
+    } else {
+      old_stream_recvr_->TransferAllResources(output_batch);
+    }
+  }
 
   COUNTER_SET(rows_returned_counter_, num_rows_returned_);
   return Status::OK();

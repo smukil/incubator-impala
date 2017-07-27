@@ -90,49 +90,6 @@ void DataStreamService::TransmitData(const TransmitDataRequestPb* request,
   }
 }
 
-void DataStreamService::PublishFilter(const PublishFilterRequestPb* request,
-    PublishFilterResponsePb* response, RpcContext* context) {
-  TUniqueId query_id;
-  query_id.__set_lo(request->query_id().lo());
-  query_id.__set_hi(request->query_id().hi());
-
-  QueryState::ScopedRef qs(query_id);
-  if (qs.get() != nullptr) {
-    ProtoBloomFilter proto_filter;
-    proto_filter.header = request->bloom_filter();
-    Status status;
-    if (!proto_filter.header.always_true()) {
-      int idx = proto_filter.header.directory_sidecar_idx();
-      status = FromKuduStatus(context->GetInboundSidecar(idx, &proto_filter.directory));
-    }
-    if (status.ok()) {
-      qs->PublishFilter(request->filter_id(), request->fragment_idx(), proto_filter);
-    }
-  }
-
-  context->RespondSuccess();
-}
-
-void DataStreamService::UpdateFilter(const UpdateFilterRequestPb* request,
-    UpdateFilterResponsePb* response, RpcContext* context) {
-  TUniqueId query_id;
-  query_id.lo = request->query_id().lo();
-  query_id.hi = request->query_id().hi();
-
-  ProtoBloomFilter filter;
-  filter.header = request->bloom_filter();
-  Status status = Status::OK();
-  if (!filter.header.always_true()) {
-    status = FromKuduStatus(context->GetInboundSidecar(
-        filter.header.directory_sidecar_idx(), &filter.directory));
-  }
-  if (status.ok()) {
-    ExecEnv::GetInstance()->impala_server()->UpdateFilter(
-        request->filter_id(), query_id, filter);
-  }
-  context->RespondSuccess();
-}
-
 ImpalaInternalService::ImpalaInternalService() {
   impala_server_ = ExecEnv::GetInstance()->impala_server();
   DCHECK(impala_server_ != nullptr);
@@ -182,6 +139,36 @@ void ImpalaInternalService::ReportExecStatus(TReportExecStatusResult& return_val
   DCHECK(params.__isset.query_id);
   DCHECK(params.__isset.coord_state_idx);
   impala_server_->ReportExecStatus(return_val, params);
+}
+
+void ImpalaInternalService::TransmitData(TOldTransmitDataResult& return_val,
+    const TOldTransmitDataParams& params) {
+  FAULT_INJECTION_RPC_DELAY(RPC_TRANSMITDATA);
+  DCHECK(params.__isset.dest_fragment_instance_id);
+  DCHECK(params.__isset.sender_id);
+  DCHECK(params.__isset.dest_node_id);
+  impala_server_->TransmitData(return_val, params);
+}
+
+void ImpalaInternalService::UpdateFilter(TUpdateFilterResult& return_val,
+    const TUpdateFilterParams& params) {
+  FAULT_INJECTION_RPC_DELAY(RPC_UPDATEFILTER);
+  DCHECK(params.__isset.filter_id);
+  DCHECK(params.__isset.query_id);
+  DCHECK(params.__isset.bloom_filter);
+  impala_server_->UpdateFilter(return_val, params);
+}
+
+void ImpalaInternalService::PublishFilter(TPublishFilterResult& return_val,
+    const TPublishFilterParams& params) {
+  FAULT_INJECTION_RPC_DELAY(RPC_PUBLISHFILTER);
+  DCHECK(params.__isset.filter_id);
+  DCHECK(params.__isset.dst_query_id);
+  DCHECK(params.__isset.dst_fragment_idx);
+  DCHECK(params.__isset.bloom_filter);
+  QueryState::ScopedRef qs(params.dst_query_id);
+  if (qs.get() == nullptr) return;
+  qs->PublishFilter(params.filter_id, params.dst_fragment_idx, params.bloom_filter);
 }
 
 }

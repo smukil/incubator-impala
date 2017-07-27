@@ -49,6 +49,9 @@ add_library(Runtime
   mem-tracker.cc
   mem-pool.cc
   multi-precision.cc
+  old-data-stream-mgr.cc
+  old-data-stream-sender.cc
+  old-data-stream-recvr.cc
   parallel-executor.cc
   query-exec-mgr.cc
   query-state.cc

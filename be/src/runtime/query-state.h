@@ -36,7 +36,6 @@ namespace impala {
 
 class FragmentInstanceState;
 class MemTracker;
-class ProtoBloomFilter;
 class ReservationTracker;
 
 /// Central class for all backend execution state (example: the FragmentInstanceStates
@@ -140,7 +139,7 @@ class QueryState {
 
   /// Blocks until all fragment instances have finished their Prepare phase.
   void PublishFilter(int32_t filter_id, int fragment_idx,
-      const ProtoBloomFilter& proto_bloom_filter);
+      const TBloomFilter& thrift_bloom_filter);
 
   /// Cancels all actively executing fragment instances. Blocks until all fragment
   /// instances have finished their Prepare phase. Idempotent.

@@ -40,8 +40,7 @@ using std::boolalpha;
 using kudu::rpc::ErrorStatusPB;
 using kudu::rpc::RpcContext;
 
-DEFINE_int32(datastream_sender_timeout_ms, 120000, "(Advanced) The time, in ms, that can "
-    "elapse before a plan fragment will time-out trying to send a row batch.");
+DECLARE_int32(datastream_sender_timeout_ms);
 
 /// This parameter controls the minimum amount of time a closed stream ID will stay in
 /// closed_stream_cache_ before it is evicted. It needs to be set sufficiently high that
@@ -76,6 +75,7 @@ DataStreamMgr::DataStreamMgr(MetricGroup* metrics)
       "total-senders-timedout-waiting-for-recvr-creation", 0L);
   maintenance_thread_.reset(
       new Thread("data-stream-mgr", "maintenance", [this](){ this->Maintenance(); }));
+  LOG (INFO) << "Using KRPC DataStreamMgr";
 }
 
 void DataStreamMgr::EnqueueRowBatch(DeserializeWorkItem&& payload) {

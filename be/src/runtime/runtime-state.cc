@@ -35,6 +35,8 @@
 #include "runtime/bufferpool/reservation-tracker.h"
 #include "runtime/data-stream-mgr.h"
 #include "runtime/data-stream-recvr.h"
+#include "runtime/old-data-stream-mgr.h"
+#include "runtime/old-data-stream-recvr.h"
 #include "runtime/descriptors.h"
 #include "runtime/exec-env.h"
 #include "runtime/mem-tracker.h"
@@ -309,6 +311,10 @@ DiskIoMgr* RuntimeState::io_mgr() {
 
 DataStreamMgr* RuntimeState::stream_mgr() {
   return exec_env_->stream_mgr();
+}
+
+OldDataStreamMgr* RuntimeState::old_stream_mgr() {
+  return exec_env_->old_stream_mgr();
 }
 
 HBaseTableFactory* RuntimeState::htable_factory() {

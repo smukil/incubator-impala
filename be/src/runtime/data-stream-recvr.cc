@@ -357,6 +357,7 @@ DataStreamRecvr::DataStreamRecvr(DataStreamMgr* stream_mgr, MemTracker* parent_t
       ADD_COUNTER(sender_side_profile, "NumBatchesRejected", TUnit::UNIT);
   num_accepted_batches_ =
       ADD_COUNTER(sender_side_profile, "NumBatchesAccepted", TUnit::UNIT);
+  LOG (INFO) << "Using KRPC DataStreamRecvr";
 }
 
 Status DataStreamRecvr::GetNext(RowBatch* output_batch, bool* eos) {

@@ -75,51 +75,6 @@ message EndDataStreamResponsePb {
 
 }
 
-// All fields are required in V1.
-message BloomFilterPb {
-  // Log_2 of the heap space optional for this filter. See BloomFilter::BloomFilter() for
-  // details.
-  optional int32 log_heap_space = 1;
-
-  // List of buckets representing the Bloom Filter contents, laid out contiguously in one
-  // string for efficiency of (de)serialisation. See BloomFilter::Bucket and
-  // BloomFilter::directory_.
-  optional int32 directory_sidecar_idx = 2;
-
-  // If true, this filter allows all elements to pass (i.e. its selectivity is 1). If
-  // true, 'directory' and 'log_heap_space' are not meaningful.
-  optional bool always_true = 3;
-}
-
-// All fields are required in V1.
-message PublishFilterRequestPb {
-  // Filter ID, unique within a query.
-  optional int32 filter_id = 1;
-
-  // ID of fragment to receive this filter
-  // optional UniqueIdPb dst_instance_id = 2;
-
-  // Actual bloom_filter payload
-  optional BloomFilterPb bloom_filter = 3;
-
-  optional int32 fragment_idx = 4;
-
-  optional UniqueIdPb query_id = 5;
-}
-
-message PublishFilterResponsePb {}
-
-message UpdateFilterRequestPb {
-  // Filter ID, unique within a query.
-  optional int32 filter_id = 1;
-
-  // Query that this filter is for.
-  optional UniqueIdPb query_id = 2;
-  optional BloomFilterPb bloom_filter = 3;
-}
-
-message UpdateFilterResponsePb {}
-
 // Handles data transmission between fragment instances, and also between fragment
 // instances and the coordinator for filter aggregation.
 service DataStreamService {
@@ -131,13 +86,4 @@ service DataStreamService {
   // Called by a sender to close the channel between fragment instances.
   rpc EndDataStream(EndDataStreamRequestPb) returns (EndDataStreamResponsePb);
 
-  // Called by the coordinator to deliver global runtime filters to fragment
-  // instances for
-  // application at plan nodes.
-  rpc PublishFilter(PublishFilterRequestPb) returns (PublishFilterResponsePb);
-
-  // Called by fragment instances that produce local runtime filters to deliver
-  // them to
-  // the coordinator for aggregation and broadcast.
-  rpc UpdateFilter(UpdateFilterRequestPb) returns (UpdateFilterResponsePb);
 }

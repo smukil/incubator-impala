@@ -22,6 +22,7 @@
 #include "kudu/util/net/net_util.h"
 
 #include "rpc/rpc.h"
+#include "runtime/backend-client.h"
 #include "runtime/client-cache.h"
 #include "runtime/exec-env.h"
 #include "runtime/mem-tracker.h"
@@ -104,10 +105,32 @@ RuntimeFilter* RuntimeFilterBank::RegisterFilter(const TRuntimeFilterDesc& filte
   return ret;
 }
 
+namespace {
+
+/// Sends a filter to the coordinator. Executed asynchronously in the context of
+/// ExecEnv::rpc_pool().
+void SendFilterToCoordinator(TNetworkAddress address, TUpdateFilterParams params,
+    ImpalaBackendClientCache* client_cache) {
+  Status status;
+  ImpalaBackendConnection coord(client_cache, address, &status);
+  if (!status.ok()) {
+    // Failing to send a filter is not a query-wide error - the remote fragment will
+    // continue regardless.
+    // TODO: Retry.
+    LOG(INFO) << "Couldn't send filter to coordinator: " << status.msg().msg();
+    return;
+  }
+  TUpdateFilterResult res;
+  status = coord.DoRpc(&ImpalaBackendClient::UpdateFilter, params, &res);
+}
+
+}
+
 void RuntimeFilterBank::UpdateFilterFromLocal(int32_t filter_id,
     BloomFilter* bloom_filter) {
   DCHECK_NE(state_->query_options().runtime_filter_mode, TRuntimeFilterMode::OFF)
       << "Should not be calling UpdateFilterFromLocal() if filtering is disabled";
+  TUpdateFilterParams params;
   // A runtime filter may have both local and remote targets.
   bool has_local_target = false;
   bool has_remote_target = false;
@@ -139,51 +162,29 @@ void RuntimeFilterBank::UpdateFilterFromLocal(int32_t filter_id,
 
   if (has_remote_target
       && state_->query_options().runtime_filter_mode == TRuntimeFilterMode::GLOBAL) {
-    unique_ptr<UpdateFilterRequestPb> params = make_unique<UpdateFilterRequestPb>();
-    ProtoBloomFilter* proto = new ProtoBloomFilter();
-    BloomFilter::ToProto(bloom_filter, proto);
-    params->set_filter_id(filter_id);
-    params->mutable_query_id()->set_lo(state_->query_id().lo);
-    params->mutable_query_id()->set_hi(state_->query_id().hi);
+    params.__set_filter_id(filter_id);
+    params.__set_query_id(state_->query_id());
+    BloomFilter::ToThrift(bloom_filter, &params.bloom_filter);
+    params.__isset.bloom_filter = true;
 
-    auto completion_cb = [proto](const Status& status, UpdateFilterRequestPb* request,
-        UpdateFilterResponsePb* response, RpcController* controller) {
-      delete proto;
-      delete request;
-      delete response;
-    };
-
-    UpdateFilterResponsePb* response = new UpdateFilterResponsePb();
-    TNetworkAddress coord = MakeNetworkAddress(state_->query_ctx().coord_address.hostname,
-        state_->query_ctx().coord_data_svc_port);
-    auto rpc =
-        Rpc<DataStreamServiceProxy>::Make(coord, ExecEnv::GetInstance()->rpc_mgr());
-
-    int sidecar_idx;
-    rpc.AddSidecar(proto->directory_data, &sidecar_idx);
-    (*params->mutable_bloom_filter()) = proto->header;
-    params->mutable_bloom_filter()->set_directory_sidecar_idx(sidecar_idx);
-
-    rpc.SetTimeout(MonoDelta::FromMilliseconds(FLAGS_rpc_update_filter_timeout_ms))
-        .SetMaxAttempts(5)
-        .SetRetryInterval(100)
-        .ExecuteAsync(&DataStreamServiceProxy::UpdateFilterAsync, params.release(),
-            response, completion_cb);
+    ExecEnv::GetInstance()->rpc_pool()->Offer(bind<void>(
+        SendFilterToCoordinator, state_->query_ctx().coord_address, params,
+        ExecEnv::GetInstance()->impalad_client_cache()));
   }
 }
 
-void RuntimeFilterBank::PublishGlobalFilter(
-    int32_t filter_id, const ProtoBloomFilter& filter_pb) {
+void RuntimeFilterBank::PublishGlobalFilter(int32_t filter_id,
+    const TBloomFilter& thrift_filter) {
   lock_guard<mutex> l(runtime_filter_lock_);
   if (closed_) return;
   RuntimeFilterMap::iterator it = consumed_filters_.find(filter_id);
   DCHECK(it != consumed_filters_.end()) << "Tried to publish unregistered filter: "
                                         << filter_id;
-  if (filter_pb.header.always_true()) {
+  if (thrift_filter.always_true) {
     it->second->SetBloomFilter(BloomFilter::ALWAYS_TRUE_FILTER);
   } else {
     int64_t required_space =
-        BloomFilter::GetExpectedHeapSpaceUsed(filter_pb.header.log_heap_space());
+        BloomFilter::GetExpectedHeapSpaceUsed(thrift_filter.log_heap_space);
     // Silently fail to publish the filter (replacing it with a 0-byte complete one) if
     // there's not enough memory for it.
     if (!filter_mem_tracker_->TryConsume(required_space)) {
@@ -191,7 +192,7 @@ void RuntimeFilterBank::PublishGlobalFilter(
                  << " (fragment instance: " << state_->fragment_instance_id() << ")";
       it->second->SetBloomFilter(BloomFilter::ALWAYS_TRUE_FILTER);
     } else {
-      BloomFilter* bloom_filter = obj_pool_.Add(new BloomFilter(filter_pb));
+      BloomFilter* bloom_filter = obj_pool_.Add(new BloomFilter(thrift_filter));
       DCHECK_EQ(required_space, bloom_filter->GetHeapSpaceUsed());
       memory_allocated_->Add(bloom_filter->GetHeapSpaceUsed());
       it->second->SetBloomFilter(bloom_filter);

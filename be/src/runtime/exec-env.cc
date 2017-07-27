@@ -36,6 +36,7 @@
 #include "runtime/client-cache.h"
 #include "runtime/coordinator.h"
 #include "runtime/data-stream-mgr.h"
+#include "runtime/old-data-stream-mgr.h"
 #include "runtime/disk-io-mgr.h"
 #include "runtime/hbase-table-factory.h"
 #include "runtime/hdfs-fs-cache.h"
@@ -87,6 +88,9 @@ DEFINE_int32(num_hdfs_worker_threads, 16,
     "(Advanced) The number of threads in the global HDFS operation pool");
 DEFINE_bool(disable_admission_control, false, "Disables admission control.");
 
+DEFINE_bool(use_krpc, false, "Used to indicate whether to use KRPC for the DataStream "
+    "subsystem, or the Thrift RPC layer instead. Defaults to false.");
+
 DECLARE_int32(state_store_port);
 DECLARE_int32(num_threads_per_core);
 DECLARE_int32(num_cores);
@@ -130,6 +134,7 @@ DEFINE_int32(backend_client_rpc_timeout_ms, 300000, "(Advanced) The underlying "
 DEFINE_int32(catalog_client_connection_num_retries, 3, "Retry catalog connections.");
 DEFINE_int32(catalog_client_rpc_timeout_ms, 0, "(Advanced) The underlying TSocket "
     "send/recv timeout in milliseconds for a catalog client RPC.");
+DEFINE_int32(krpc_service_port, 29000, "The port reserved for the services running on KRPC");
 
 const static string DEFAULT_FS = "fs.defaultFS";
 
@@ -142,14 +147,14 @@ struct ExecEnv::KuduClientPtr {
 ExecEnv* ExecEnv::exec_env_ = nullptr;
 
 ExecEnv::ExecEnv() : ExecEnv(FLAGS_hostname, FLAGS_be_port,
-    FLAGS_state_store_subscriber_port, FLAGS_webserver_port, FLAGS_state_store_host,
-    FLAGS_state_store_port) { }
+    FLAGS_state_store_subscriber_port, FLAGS_state_store_subscriber_port,
+    FLAGS_webserver_port, FLAGS_state_store_host, FLAGS_state_store_port) { }
 
-ExecEnv::ExecEnv(const string& hostname, int backend_port, int data_service_port,
-    int webserver_port, const string& statestore_host, int statestore_port)
+ExecEnv::ExecEnv(const string& hostname, int backend_port,
+    int state_store_subscriber_port, int data_service_port, int webserver_port,
+    const string& statestore_host, int statestore_port)
   : obj_pool_(new ObjectPool),
     metrics_(new MetricGroup("impala-metrics")),
-    stream_mgr_(new DataStreamMgr(metrics_.get())),
     impalad_client_cache_(
         new ImpalaBackendClientCache(FLAGS_backend_client_connection_num_retries,
             0, FLAGS_backend_client_rpc_timeout_ms, FLAGS_backend_client_rpc_timeout_ms,
@@ -169,11 +174,18 @@ ExecEnv::ExecEnv(const string& hostname, int backend_port, int data_service_port
     frontend_(new Frontend()),
     exec_rpc_thread_pool_(new CallableThreadPool("exec-rpc-pool",
         "worker", FLAGS_coordinator_rpc_threads, numeric_limits<int32_t>::max())),
+    async_rpc_pool_(new CallableThreadPool("rpc-pool", "async-rpc-sender", 8, 10000)),
     query_exec_mgr_(new QueryExecMgr()),
     rpc_mgr_(new RpcMgr()),
     enable_webserver_(FLAGS_enable_webserver && webserver_port > 0),
     backend_address_(MakeNetworkAddress(hostname, backend_port)),
     data_svc_port_(data_service_port) {
+  if (FLAGS_use_krpc) {
+    stream_mgr_.reset(new DataStreamMgr(metrics_.get()));
+  } else {
+    old_stream_mgr_.reset(new OldDataStreamMgr(metrics_.get()));
+  }
+
   request_pool_service_.reset(new RequestPoolService(metrics_.get()));
 
   DCHECK(statestore_port > 0);
@@ -182,10 +194,12 @@ ExecEnv::ExecEnv(const string& hostname, int backend_port, int data_service_port
       MakeNetworkAddress(statestore_host, statestore_port);
   TNetworkAddress data_stream_svc_address =
       MakeNetworkAddress(FLAGS_hostname, data_service_port);
+  TNetworkAddress subscriber_address =
+      MakeNetworkAddress(FLAGS_hostname, state_store_subscriber_port);
 
   statestore_subscriber_.reset(new StatestoreSubscriber(
           Substitute("impalad@$0", TNetworkAddressToString(backend_address_)),
-          data_stream_svc_address, statestore_address, rpc_mgr_.get(), metrics_.get()));
+          subscriber_address, statestore_address, rpc_mgr_.get(), metrics_.get()));
 
   if (FLAGS_is_coordinator) {
     scheduler_.reset(new Scheduler(statestore_subscriber_.get(),

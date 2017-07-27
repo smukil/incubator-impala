@@ -59,11 +59,15 @@ InProcessImpalaServer* InProcessImpalaServer::StartWithEphemeralPorts(
     int hs2_port = FindUnusedEphemeralPort(&used_ports);
     if (hs2_port == -1) continue;
 
+    int state_store_subscriber_port = FindUnusedEphemeralPort(&used_ports);
+    if (state_store_subscriber_port == -1) continue;
+
     int data_svc_port = FindUnusedEphemeralPort(&used_ports);
     if (data_svc_port == -1) continue;
 
     InProcessImpalaServer* impala = new InProcessImpalaServer("localhost", backend_port,
-        data_svc_port, webserver_port, statestore_host, statestore_port);
+        state_store_subscriber_port, data_svc_port, webserver_port, statestore_host,
+        statestore_port);
     // Start the daemon and check if it works, if not delete the current server object and
     // pick a new set of ports
     Status started = impala->StartWithClientServers(beeswax_port, hs2_port);
@@ -81,14 +85,15 @@ InProcessImpalaServer* InProcessImpalaServer::StartWithEphemeralPorts(
 }
 
 InProcessImpalaServer::InProcessImpalaServer(const string& hostname, int backend_port,
-    int data_svc_port, int webserver_port, const string& statestore_host, int statestore_port)
+    int state_store_subscriber_port, int data_svc_port, int webserver_port,
+    const string& statestore_host, int statestore_port)
   : hostname_(hostname),
     backend_port_(backend_port),
     beeswax_port_(0),
     hs2_port_(0),
     impala_server_(NULL),
-    exec_env_(new ExecEnv(hostname, backend_port, data_svc_port, webserver_port,
-            statestore_host, statestore_port)) {}
+    exec_env_(new ExecEnv(hostname, backend_port, state_store_subscriber_port,
+              data_svc_port, webserver_port, statestore_host, statestore_port)) {}
 
 void InProcessImpalaServer::SetCatalogInitialized() {
   DCHECK(impala_server_ != NULL) << "Call Start*() first.";

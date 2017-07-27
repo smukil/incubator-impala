@@ -34,6 +34,7 @@ namespace impala {
 
 class BufferedBlockMgr;
 class DataStreamRecvr;
+class OldDataStreamRecvr;
 class DescriptorTbl;
 class DiskIoMgr;
 class DiskIoRequestContext;
@@ -49,6 +50,7 @@ class TimestampValue;
 class TUniqueId;
 class ExecEnv;
 class DataStreamMgr;
+class OldDataStreamMgr;
 class HBaseTableFactory;
 class TPlanFragmentCtx;
 class TPlanFragmentInstanceCtx;
@@ -124,6 +126,7 @@ class RuntimeState {
   }
   ExecEnv* exec_env() { return exec_env_; }
   DataStreamMgr* stream_mgr();
+  OldDataStreamMgr* old_stream_mgr();
   HBaseTableFactory* htable_factory();
   ImpalaBackendClientCache* impalad_client_cache();
   CatalogServiceClientCache* catalogd_client_cache();

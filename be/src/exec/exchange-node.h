@@ -25,6 +25,7 @@
 namespace impala {
 
 class DataStreamRecvr;
+class OldDataStreamRecvr;
 class RowBatch;
 class ScalarExpr;
 class TupleRowComparator;
@@ -76,6 +77,7 @@ class ExchangeNode : public ExecNode {
   /// exchange node instance and the DataStreamMgr used to create the receiver.
   /// stream_recvr_->Close() must be called before this instance is destroyed.
   std::shared_ptr<DataStreamRecvr> stream_recvr_;
+  std::shared_ptr<OldDataStreamRecvr> old_stream_recvr_;
 
   /// our input rows are a prefix of the rows we produce
   RowDescriptor input_row_desc_;

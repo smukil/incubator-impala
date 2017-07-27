@@ -51,6 +51,7 @@
 #include "rpc/thrift-util.h"
 #include "runtime/client-cache.h"
 #include "runtime/data-stream-mgr.h"
+#include "runtime/old-data-stream-mgr.h"
 #include "runtime/exec-env.h"
 #include "runtime/lib-cache.h"
 #include "runtime/timestamp-value.h"
@@ -110,6 +111,7 @@ DECLARE_string(authorized_proxy_user_config);
 DECLARE_string(authorized_proxy_user_config_delimiter);
 DECLARE_bool(abort_on_config_error);
 DECLARE_bool(disk_spill_encryption);
+DECLARE_bool(use_krpc);
 
 DEFINE_int32(beeswax_port, 21000, "port on which Beeswax client requests are served");
 DEFINE_int32(hs2_port, 21050, "port on which HiveServer2 client requests are served");
@@ -882,7 +884,6 @@ void ImpalaServer::PrepareQueryContext(TQueryCtx* query_ctx) {
   query_ctx->__set_now_string(TimestampValue::LocalTime().ToString());
   query_ctx->__set_start_unix_millis(UnixMillis());
   query_ctx->__set_coord_address(ExecEnv::GetInstance()->resolved_backend_address());
-  query_ctx->__set_coord_data_svc_port(ExecEnv::GetInstance()->data_svc_port());
 
   // Creating a random_generator every time is not free, but
   // benchmarks show it to be slightly cheaper than contending for a
@@ -1137,6 +1138,34 @@ void ImpalaServer::ReportExecStatus(
   }
   request_state->coord()->UpdateBackendExecStatus(params).SetTStatus(&return_val);
 }
+
+void ImpalaServer::TransmitData(
+    TOldTransmitDataResult& return_val, const TOldTransmitDataParams& params) {
+  VLOG_ROW << "TransmitData(): instance_id=" << params.dest_fragment_instance_id
+           << " node_id=" << params.dest_node_id
+           << " #rows=" << params.row_batch.num_rows
+           << " sender_id=" << params.sender_id
+           << " eos=" << (params.eos ? "true" : "false");
+  // TODO: fix Thrift so we can simply take ownership of thrift_batch instead
+  // of having to copy its data
+  if (params.row_batch.num_rows > 0) {
+    Status status = exec_env_->old_stream_mgr()->AddData(
+        params.dest_fragment_instance_id, params.dest_node_id, params.row_batch,
+        params.sender_id);
+    status.SetTStatus(&return_val);
+    if (!status.ok()) {
+      // should we close the channel here as well?
+      return;
+    }
+  }
+
+  if (params.eos) {
+    exec_env_->old_stream_mgr()->CloseSender(
+        params.dest_fragment_instance_id, params.dest_node_id,
+        params.sender_id).SetTStatus(&return_val);
+  }
+}
+
 
 void ImpalaServer::InitializeConfigVariables() {
   QueryOptionsMask set_query_options; // unused
@@ -1891,10 +1920,12 @@ Status ImpalaServer::Init(int32_t beeswax_port, int32_t hs2_port) {
 
   internal_service_port_ = exec_env_->data_svc_port();
   DCHECK_LE(0, internal_service_port_);
-  RpcMgr* mgr = exec_env_->rpc_mgr();
-  unique_ptr<ServiceIf> data_svc(new DataStreamService(mgr));
-  RETURN_IF_ERROR(mgr->RegisterService(FLAGS_datastream_service_num_svc_threads,
-      FLAGS_datastream_service_queue_depth, move(data_svc)));
+  if (FLAGS_use_krpc) {
+    RpcMgr* mgr = exec_env_->rpc_mgr();
+    unique_ptr<ServiceIf> data_svc(new DataStreamService(mgr));
+    RETURN_IF_ERROR(mgr->RegisterService(FLAGS_datastream_service_num_svc_threads,
+        FLAGS_datastream_service_queue_depth, move(data_svc)));
+  }
 
   if (!FLAGS_is_coordinator && !FLAGS_is_executor) {
     return Status("Impala does not have a valid role configured. "
@@ -2022,14 +2053,17 @@ shared_ptr<ClientRequestState> ImpalaServer::GetClientRequestState(
   }
 }
 
-void ImpalaServer::UpdateFilter(int32_t filter_id, const TUniqueId& query_id,
-    const ProtoBloomFilter& filter) {
-  shared_ptr<ClientRequestState> client_request_state = GetClientRequestState(query_id);
+void ImpalaServer::UpdateFilter(TUpdateFilterResult& result,
+    const TUpdateFilterParams& params) {
+  DCHECK(params.__isset.query_id);
+  DCHECK(params.__isset.filter_id);
+  shared_ptr<ClientRequestState> client_request_state =
+      GetClientRequestState(params.query_id);
   if (client_request_state.get() == nullptr) {
-    LOG(INFO) << "Could not find client request state: " << query_id;
+    LOG(INFO) << "Could not find client request state: " << params.query_id;
     return;
   }
-  client_request_state->coord()->UpdateFilter(filter_id, filter);
+  client_request_state->coord()->UpdateFilter(params);
 }
 
 }

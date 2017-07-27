@@ -47,7 +47,6 @@
 namespace impala {
 
 class CountingBarrier;
-class DataStreamMgr;
 class DataSink;
 class RowBatch;
 class RowDescriptor;
@@ -195,7 +194,7 @@ class Coordinator { // NOLINT: The member variables could be re-ordered to save 
   /// with others for the same filter ID into a global filter. If all updates for that
   /// filter ID have been received (may be 1 or more per filter), broadcast the global
   /// filter to fragment instances.
-  void UpdateFilter(int32_t filter_id, const ProtoBloomFilter& request);
+  void UpdateFilter(const TUpdateFilterParams& params);
 
  private:
   class BackendState;
