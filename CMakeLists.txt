@@ -373,6 +373,12 @@ ADD_THIRDPARTY_LIB(krb5
   SHARED_LIB "${KERBEROS_LIBRARY}")
 message(STATUS "Kerberos include dir: " ${KERBEROS_INCLUDE_DIR})
 
+# Look for krb5_is_config_principal() in libkrb5. It does not exist on kerberos
+# versions < krb5-1.8
+include(CheckLibraryExists)
+CHECK_LIBRARY_EXISTS("krb5" krb5_is_config_principal
+  ${KERBEROS_LIBRARY} HAVE_KRB5_IS_CONFIG_PRINCIPAL)
+
 find_package(KerberosPrograms REQUIRED)
 
 ###################################################################

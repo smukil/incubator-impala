@@ -37,6 +37,8 @@
 #include "kudu/util/scoped_cleanup.h"
 #include "kudu/util/thread.h"
 
+#include "common/config.h"
+
 DECLARE_string(keytab_file);
 TAG_FLAG(keytab_file, stable);
 
@@ -59,6 +61,32 @@ namespace kudu {
 namespace security {
 
 namespace {
+
+// Pull in the implementation of krb5_is_config_principal() if we're using an older
+// version of kerberos ( < krb5-1.8)
+#if !defined(HAVE_KRB5_IS_CONFIG_PRINCIPAL)
+
+static const char conf_realm[] = "X-CACHECONF:";
+static const char conf_name[] = "krb5_ccache_conf_data";
+
+bool krb5_is_config_principal(krb5_context context,
+                              krb5_const_principal principal)
+{
+    const krb5_data *realm = &principal->realm;
+
+    if (realm->length != sizeof(conf_realm) - 1 ||
+        memcmp(realm->data, conf_realm, sizeof(conf_realm) - 1) != 0)
+        return FALSE;
+
+    if (principal->length == 0 ||
+        principal->data[0].length != (sizeof(conf_name) - 1) ||
+        memcmp(principal->data[0].data, conf_name, sizeof(conf_name) - 1) != 0)
+        return FALSE;
+
+    return TRUE;
+}
+
+#endif
 
 class KinitContext;
 

@@ -22,5 +22,6 @@
 /// This is a template that is populated by CMake with config information
 
 #cmakedefine HAVE_SCHED_GETCPU
+#cmakedefine HAVE_KRB5_IS_CONFIG_PRINCIPAL
 
 #endif
