@@ -38,6 +38,7 @@
 
 using boost::algorithm::is_any_of;
 using boost::algorithm::split;
+using kudu::Sockaddr;
 using std::find;
 using std::random_device;
 
@@ -116,7 +117,7 @@ Status HostnameToIpAddr(const Hostname& hostname, IpAddr* ip){
 }
 
 bool IsResolvedAddress(const TNetworkAddress& addr) {
-  kudu::Sockaddr sock;
+  Sockaddr sock;
   return sock.ParseString(addr.hostname, addr.port).ok();
 }
 
