@@ -28,6 +28,7 @@
 #include <vector>
 #include <boost/algorithm/string.hpp>
 
+#include "exec/kudu-util.h"
 #include "kudu/util/net/sockaddr.h"
 #include "util/debug-util.h"
 #include "util/error-util.h"
@@ -37,6 +38,7 @@
 
 using boost::algorithm::is_any_of;
 using boost::algorithm::split;
+using kudu::Sockaddr;
 using std::find;
 using std::random_device;
 
@@ -115,7 +117,7 @@ Status HostnameToIpAddr(const Hostname& hostname, IpAddr* ip){
 }
 
 bool IsResolvedAddress(const TNetworkAddress& addr) {
-  kudu::Sockaddr sock;
+  Sockaddr sock;
   return sock.ParseString(addr.hostname, addr.port).ok();
 }
 
@@ -212,4 +214,13 @@ int FindUnusedEphemeralPort(vector<int>* used_ports) {
   close(sockfd);
   return -1;
 }
+
+Status TNetworkAddressToSockaddr(const TNetworkAddress& address, Sockaddr* sockaddr) {
+  DCHECK(IsResolvedAddress(address));
+  KUDU_RETURN_IF_ERROR(
+      sockaddr->ParseString(TNetworkAddressToString(address), address.port),
+      "Failed to parse address to Kudu Sockaddr.");
+  return Status::OK();
+}
+
 }
