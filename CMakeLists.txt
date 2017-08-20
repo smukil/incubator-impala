@@ -350,12 +350,13 @@ include_directories(SYSTEM ${KUDU_CLIENT_INCLUDE_DIR})
 add_subdirectory(common/function-registry)
 add_subdirectory(common/thrift)
 add_subdirectory(common/fbs)
+add_subdirectory(common/protobuf)
 add_subdirectory(be)
 add_subdirectory(fe)
 add_subdirectory(ext-data-source)
 
 # Build target for all generated files which most backend code depends on
-add_custom_target(gen-deps ALL DEPENDS thrift-deps)
+add_custom_target(gen-deps ALL DEPENDS thrift-deps proto-deps)
 
 add_custom_target(tarballs ALL DEPENDS shell_tarball)
 
