@@ -90,8 +90,10 @@ ColumnType KuduDataTypeToColumnType(kudu::client::KuduColumnSchema::DataType typ
 inline Status FromKuduStatus(
     const kudu::Status& k_status, const std::string prepend = "") {
   if (LIKELY(k_status.ok())) return Status::OK();
-  if (prepend.empty()) return Status(k_status.ToString());
-  return Status(strings::Substitute("$0: $1", prepend, k_status.ToString()));
+  const string& err_msg = prepend.empty() ? k_status.ToString() :
+      strings::Substitute("$0: $1", prepend, k_status.ToString());
+  VLOG(1) << err_msg;
+  return Status::Expected(err_msg);
 }
 
 } /// namespace impala
