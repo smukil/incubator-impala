@@ -277,7 +277,12 @@ Status KinitContext::DoRenewal() {
     time_t now = time(nullptr);
     time_t ticket_expiry = creds.times.endtime;
     time_t renew_till = creds.times.renew_till;
-    time_t renew_deadline = renew_till - 30;
+
+    // 'starttime' is an optional field in the 'krb5_ticket_times' struct. If it's not present, we
+    // consider the 'authtime' as the start time instead.
+    time_t start_time = creds.times.starttime > 0 ? creds.times.starttime : creds.times.authtime;
+    double ticket_lifetime = difftime(creds.times.endtime, start_time);
+    time_t renew_deadline = renew_till - std::min(static_cast<double>(30), ticket_lifetime);
 
     krb5_creds new_creds;
     memset(&new_creds, 0, sizeof(krb5_creds));
@@ -285,7 +290,7 @@ Status KinitContext::DoRenewal() {
         krb5_free_cred_contents(g_krb5_ctx, &new_creds); });
     // If the ticket has already expired or if there's only a short period before which the
     // renew window closes, we acquire a new ticket.
-    if (ticket_expiry < now || renew_deadline < now) {
+    if (ticket_expiry < now || (now + ticket_lifetime) > renew_deadline) {
       // Acquire a new ticket using the keytab. This ticket will automatically be put into the
       // credential cache.
       {

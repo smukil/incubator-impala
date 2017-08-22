@@ -786,7 +786,8 @@ Status AuthManager::InitKerberosEnv() {
   // is normally fine, but if you're not running impala daemons as user
   // 'impala', the kinit we perform is going to blow away credentials for the
   // current user.  Not setting this isn't technically fatal, so ignore errors.
-  (void) setenv("KRB5CCNAME", "/tmp/krb5cc_impala_internal", 1);
+  //(void) setenv("KRB5CCNAME", "/tmp/krb5cc_impala_internal", 1);
+  setenv("KRB5CCNAME", "MEMORY:kudu", 1);
 
   // If an alternate krb5_conf location is supplied, set both KRB5_CONFIG and
   // JAVA_TOOL_OPTIONS in the environment.
