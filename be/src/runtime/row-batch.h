@@ -25,10 +25,16 @@
 #include "codegen/impala-ir.h"
 #include "common/compiler-util.h"
 #include "common/logging.h"
+#include "gen-cpp/row_batch.pb.h"
+#include "kudu/util/slice.h"
 #include "runtime/bufferpool/buffer-pool.h"
 #include "runtime/descriptors.h"
 #include "runtime/disk-io-mgr.h"
 #include "runtime/mem-pool.h"
+
+namespace kudu {
+class Slice;
+} // namespace kudu
 
 namespace impala {
 
@@ -40,6 +46,64 @@ class TRowBatch;
 class Tuple;
 class TupleRow;
 class TupleDescriptor;
+
+/// A serialized protobuf row batch used in both outbound and inbound directions
+/// for TransmitData() RPC.
+struct ProtoRowBatch {
+  /// The serialized header which contains the meta-data of the row batch such as the
+  /// number of rows and the sidecar index of the tuple offsets and data etc.
+  RowBatchHeaderPB header;
+
+  /// This contains a pointer to the buffer which is an integer array holding the
+  /// offsets of the tuples into 'tuple_data' buffer below. It also contains the total
+  /// byte size of the array. In the outbound directions, the buffer is 'tuple_offsets_'
+  /// in a CachedProtoRowBatch object. In the inbound direction, the buffer is allocated
+  /// by the RPC layer. Note that the data is not owned by the ProtoRowBatch in both
+  /// directions.
+  kudu::Slice tuple_offsets;
+
+  /// This contains a pointer to the buffer which holds the tuple data buffer and the
+  /// size of the buffer. In the outbound direction, the buffer is the 'tuple_data_' in
+  /// a CachedProtoRowBatch object. In the inbound direction, the buffer allocated by the
+  /// RPC layer. Note that the data is not owned by the ProtoRowBatch in both directions.
+  kudu::Slice tuple_data;
+
+  /// Utility function for returning the number of rows in this row batch.
+  int num_rows() const {
+    DCHECK(header.has_num_rows());
+    return header.num_rows();
+  }
+
+  /// Returns true if the proto row batch has been intialized and ready to be sent.
+  /// This entails setting some fields initialized in RowBatch::Serialize().
+  bool IsInitialized() const {
+     return header.has_num_rows() && header.has_uncompressed_size() &&
+         header.has_compression_type();
+  }
+};
+
+/// A cached serialized protobuf row batch. It's a wrapper around ProtoRowBatch plus
+/// two buffers for holding the tuple offsets and tuple data. The buffers and the
+/// ProtoRowBatch are reused across multiple serialization calls of row batches to avoid
+/// new allocation on every serialization.
+class CachedProtoRowBatch {
+ public:
+  ProtoRowBatch* proto_batch() { return &proto_batch_; }
+
+ private:
+  friend class RowBatch;
+
+  /// The ProtoRowBatch to serialize to.
+  ProtoRowBatch proto_batch_;
+
+  /// Contains offsets into 'tuple_data_' of all tuples in a row batch. -1 refers to
+  /// a NULL tuple. This is what the slice 'tuple_offsets' in 'proto_batch_' refers to.
+  vector<int32_t> tuple_offsets_;
+
+  /// Contains the actual data of all the tuples. The data could be compressed.
+  /// This is what the slice 'tuple_data' in 'proto_batch_' refers to.
+  string tuple_data_;
+};
 
 /// A RowBatch encapsulates a batch of rows, each composed of a number of tuples.
 /// The maximum number of rows is fixed at the time of construction.
@@ -53,9 +117,9 @@ class TupleDescriptor;
 ///      the data is in an io buffer that may not be attached to this row batch.  The
 ///      creator of that row batch has to make sure that the io buffer is not recycled
 ///      until all batches that reference the memory have been consumed.
-/// In order to minimize memory allocations, RowBatches and TRowBatches that have been
-/// serialized and sent over the wire should be reused (this prevents compression_scratch_
-/// from being needlessly reallocated).
+/// In order to minimize memory allocations, RowBatches and TRowBatches or
+/// CachedProtobufRowBatch that have been serialized and sent over the wire should be
+/// reused (this prevents compression_scratch_ from being needlessly reallocated).
 //
 /// Row batches and memory usage: We attempt to stream row batches through the plan
 /// tree without copying the data. This means that row batches are often not-compact
@@ -86,13 +150,19 @@ class RowBatch {
   /// tracker cannot be NULL.
   RowBatch(const RowDescriptor* row_desc, int capacity, MemTracker* tracker);
 
-  /// Populate a row batch from input_batch by copying input_batch's
-  /// tuple_data into the row batch's mempool and converting all offsets
-  /// in the data back into pointers.
+  /// Populate a row batch from a serialized thrift input_batch by copying
+  /// input_batch's tuple_data into the row batch's mempool and converting all
+  /// offsets in the data back into pointers.
   /// TODO: figure out how to transfer the data from input_batch to this RowBatch
   /// (so that we don't need to make yet another copy)
-  RowBatch(
-      const RowDescriptor* row_desc, const TRowBatch& input_batch, MemTracker* tracker);
+  RowBatch(const RowDescriptor* row_desc, const TRowBatch& input_batch,
+      MemTracker* tracker);
+
+  /// Populate a row batch from a serialized protobuf input_batch by copying
+  /// input_batch's tuple_data into the row batch's mempool and converting all
+  /// offsets in the data back into pointers.
+  RowBatch(const RowDescriptor* row_desc, const ProtoRowBatch& input_batch,
+      MemTracker* mem_tracker);
 
   /// Releases all resources accumulated at this row batch.  This includes
   ///  - tuple_ptrs
@@ -300,11 +370,16 @@ class RowBatch {
   /// it is ignored. This function does not Reset().
   Status Serialize(TRowBatch* output_batch);
 
+  /// Serialize the row batch into 'cached_batch'.
+  Status Serialize(CachedProtoRowBatch* cached_batch);
+
   /// Utility function: returns total byte size of a batch in either serialized or
   /// deserialized form. If a row batch is compressed, its serialized size can be much
   /// less than the deserialized size.
   static int64_t GetSerializedSize(const TRowBatch& batch);
   static int64_t GetDeserializedSize(const TRowBatch& batch);
+  static int64_t GetSerializedSize(const ProtoRowBatch& batch);
+  static int64_t GetDeserializedSize(const ProtoRowBatch& batch);
 
   int ALWAYS_INLINE num_rows() const { return num_rows_; }
   int ALWAYS_INLINE capacity() const { return capacity_; }
@@ -357,6 +432,43 @@ class RowBatch {
   /// Overload for testing that allows the test to force the deduplication level.
   Status Serialize(TRowBatch* output_batch, bool full_dedup);
 
+  /// Shared implementation between thrift and protobuf to serialize this row batch.
+  ///
+  /// 'full_dedup': true if full deduplication is used.
+  ///
+  /// 'tuple_offsets': Updated to contain offsets of all tuples into 'tuple_data' upon
+  /// return . There are a total of num_rows * num_tuples_per_row offsets. An offset
+  /// of -1 records a NULL.
+  ///
+  /// 'tuple_data': Updated to hold the serialized tuples' data. If 'compression_type'
+  /// is THdfsCompression::LZ4, this is LZ4 compressed.
+  ///
+  /// 'uncompressed_size': Updated with the uncompressed size of 'tuple_data'.
+  ///
+  /// 'compression_type': Updated with the compression type applied on 'tuple_data'.
+  /// THdfsCompression::NONE if there is no compression applied.
+  ///
+  /// Returns error status if serialization failed. Returns OK otherwise.
+  Status Serialize(bool full_dedup, vector<int32_t>* tuple_offsets, string* tuple_data,
+      int64_t* uncompressed_size, THdfsCompression::type* compression_type);
+
+  /// Shared implementation between thrift and protobuf to deserialize a row batch.
+  ///
+  /// 'input_tuple_data': contains pointer and size of tuples' data buffer.
+  /// If 'compression_type' is not THdfsCompression::NONE, tuple data is compressed.
+  ///
+  /// 'input_tuple_offsets': an int32_t array of tuples; offsets into 'input_tuple_data'.
+  /// Used for populating the tuples in the row batch with actual pointers.
+  ///
+  /// 'uncompressed_size': the uncompressed size of 'input_tuple_data' if it's compressed.
+  ///
+  /// 'compression_type': If 'input_tuple_data' is compressed, it's the compression
+  /// codec used.
+  ///
+  void Deserialize(const kudu::Slice& input_tuple_data,
+      const kudu::Slice& input_tuple_offsets, int64_t uncompressed_size,
+      THdfsCompression::type compression_type);
+
   typedef FixedSizeHashTable<Tuple*, int> DedupMap;
 
   /// The total size of all data represented in this row batch (tuples and referenced
@@ -367,7 +479,7 @@ class RowBatch {
   int64_t TotalByteSize(DedupMap* distinct_tuples);
 
   void SerializeInternal(int64_t size, DedupMap* distinct_tuples,
-      TRowBatch* output_batch);
+      vector<int32_t>* tuple_offsets, string* tuple_data);
 
   /// All members below need to be handled in RowBatch::AcquireState()
 
@@ -429,10 +541,11 @@ class RowBatch {
   std::vector<BufferInfo> buffers_;
 
   /// String to write compressed tuple data to in Serialize().
-  /// This is a string so we can swap() with the string in the TRowBatch we're serializing
-  /// to (we don't compress directly into the TRowBatch in case the compressed data is
-  /// longer than the uncompressed data). Swapping avoids copying data to the TRowBatch
-  /// and avoids excess memory allocations: since we reuse RowBatchs and TRowBatchs, and
+  /// This is a string so we can swap() with the string in the serialized row batch
+  /// (i.e. TRowBatch or CachedProtobufRowBatch) we're serializing to (we don't compress
+  /// directly into the serialized row batch in case the compressed data is longer than
+  /// the uncompressed data). Swapping avoids copying data to the serialized row batch
+  /// and avoids excess memory allocations: since we reuse the serialized row batches, and
   /// assuming all row batches are roughly the same size, all strings will eventually be
   /// allocated to the right size.
   std::string compression_scratch_;

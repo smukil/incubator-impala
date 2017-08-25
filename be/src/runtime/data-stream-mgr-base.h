@@ -47,11 +47,6 @@ class DataStreamMgrBase {
       PlanNodeId dest_node_id, int num_senders, int64_t buffer_size,
       RuntimeProfile* profile, bool is_merging) = 0;
 
-  /// Notifies the recvr associated with the fragment/node id that the specified
-  /// sender has closed.
-  virtual Status CloseSender(const TUniqueId& fragment_instance_id,
-      PlanNodeId dest_node_id, int sender_id) = 0;
-
   /// Closes all receivers registered for fragment_instance_id immediately.
   virtual void Cancel(const TUniqueId& fragment_instance_id) = 0;
 

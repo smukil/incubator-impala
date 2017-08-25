@@ -17,46 +17,394 @@
 
 #include "runtime/krpc-data-stream-recvr.h"
 
-#include "common/logging.h"
+#include <condition_variable>
+#include <queue>
+
+#include <boost/thread/locks.hpp>
+#include <boost/thread/mutex.hpp>
+
+#include "kudu/rpc/rpc_context.h"
+#include "runtime/krpc-data-stream-recvr.h"
+#include "runtime/krpc-data-stream-mgr.h"
+#include "runtime/mem-tracker.h"
+#include "runtime/row-batch.h"
+#include "runtime/sorted-run-merger.h"
+#include "util/runtime-profile-counters.h"
+#include "util/periodic-counter-updater.h"
+
+#include "gen-cpp/data_stream_service.pb.h"
+
+#include "common/names.h"
 
 DECLARE_bool(use_krpc);
 
+using kudu::rpc::RpcContext;
+using std::condition_variable_any;
+
 namespace impala {
 
-[[noreturn]] static void AbortUnsupportedFeature() {
-  // We should have gotten here only if the FLAGS_use_krpc is set to true.
-  CHECK(FLAGS_use_krpc) << "Shouldn't reach here unless startup flag 'use_krpc' "
-      "is true.";
-  // KRPC isn't supported yet, so abort.
-  ABORT_WITH_ERROR("KRPC is not supported yet. Please set the 'use_krpc' flag to "
-      "false and restart the cluster.");
+// Implements a FIFO queue of row batches from one or more senders. One queue is
+// maintained per sender if is_merging_ is true for the enclosing receiver, otherwise rows
+// from all senders are placed in the same queue.
+//
+// Batches are added by senders via AddBatch(), and removed by an enclosing
+// KrpcDataStreamRecvr via GetBatch(). If a sender adds a batch that overflows the queue, then
+// the sender is added to a queue of 'blocked senders' that will be signalled to try again
+// in FIFO order. Senders in that state will not be replied to until their row batch is
+// processed, or the receiver is closed; this ensures that only one row-batch per sender
+// is buffered in the blocked senders queue.
+class KrpcDataStreamRecvr::SenderQueue {
+ public:
+  SenderQueue(KrpcDataStreamRecvr* parent_recvr, int num_senders);
+
+  // Return the next batch from this sender queue. Sets the returned batch in cur_batch_.
+  // A returned batch that is not filled to capacity does *not* indicate
+  // end-of-stream.
+  // The call blocks until another batch arrives or all senders close.
+  // their channels. The returned batch is owned by the sender queue. The caller
+  // must acquire data from the returned batch before the next call to GetBatch().
+  Status GetBatch(RowBatch** next_batch);
+
+  // Adds a row batch to this sender queue if this stream has not been cancelled. If this
+  // batch will make the stream exceed its buffer limit, the batch is discarded and
+  // 'payload' is copied to blocked_senders_ to be responded to in the future, and the
+  // method returns immediately.
+  void AddBatch(const ProtoRowBatch& proto_batch, const TransmitDataRequestPB* request,
+      TransmitDataResponsePB* response, RpcContext* context);
+
+  // Decrement the number of remaining senders for this queue and signal eos ("new data")
+  // if the count drops to 0. The number of senders will be 1 for a merging
+  // KrpcDataStreamRecvr.
+  void DecrementSenders();
+
+  // Set cancellation flag and signal cancellation to receiver and sender. Subsequent
+  // incoming batches will be dropped.
+  void Cancel();
+
+  // Must be called once to cleanup any queued resources.
+  void Close();
+
+  // Returns the current batch from this queue being processed by a consumer.
+  RowBatch* current_batch() const { return current_batch_.get(); }
+
+ private:
+  // Receiver of which this queue is a member.
+  KrpcDataStreamRecvr* recvr_;
+
+  // Enforces mutual exclusion between Close() and AddBatch(), so that if AddBatch() does
+  // any work, Close() will not run until after it (and can perform any clean up).
+  SpinLock closing_lock_;
+
+  // Protects all subsequent fields.
+  SpinLock lock_;
+
+  // if true, the receiver fragment for this stream got cancelled
+  bool is_cancelled_ = false;
+
+  // number of senders which haven't closed the channel yet
+  // (if it drops to 0, end-of-stream is true)
+  int num_remaining_senders_;
+
+  // signal arrival of new batch or the eos/cancelled condition
+  condition_variable_any data_arrival_cv_;
+
+  // queue of (batch length, batch) pairs.  The SenderQueue block owns memory to
+  // these batches. They are handed off to the caller via GetBatch.
+  typedef list<pair<int, RowBatch*>> RowBatchQueue;
+  RowBatchQueue batch_queue_;
+
+  // The batch that was most recently returned via GetBatch(), i.e. the current batch
+  // from this queue being processed by a consumer. Is destroyed when the next batch
+  // is retrieved.
+  scoped_ptr<RowBatch> current_batch_;
+
+  // Set to true when the first batch has been received
+  bool received_first_batch_ = false;
+
+  // Queue of blocked senders - those that have a batch to deliver, but the queue was full
+  // when they last tried to do so. The senders wait here until there is a space for their
+  // batches, allowing the receiver-side to implement basic flow-control.
+  queue<unique_ptr<TransmitDataCtx>> blocked_senders_;
+};
+
+KrpcDataStreamRecvr::SenderQueue::SenderQueue(
+    KrpcDataStreamRecvr* parent_recvr, int num_senders)
+  : recvr_(parent_recvr), num_remaining_senders_(num_senders) { }
+
+Status KrpcDataStreamRecvr::SenderQueue::GetBatch(RowBatch** next_batch) {
+  SCOPED_TIMER(recvr_->queue_get_batch_time_);
+  unique_lock<SpinLock> l(lock_);
+  // cur_batch_ must be replaced with the returned batch.
+  current_batch_.reset();
+  *next_batch = nullptr;
+
+  while (true) {
+    // wait until something shows up or we know we're done
+    while (!is_cancelled_ && batch_queue_.empty() && blocked_senders_.empty()
+        && num_remaining_senders_ > 0) {
+      VLOG_ROW << "wait arrival fragment_instance_id=" << recvr_->fragment_instance_id()
+               << " node=" << recvr_->dest_node_id();
+      // Don't count time spent waiting on the sender as active time.
+      CANCEL_SAFE_SCOPED_TIMER(recvr_->data_arrival_timer_, &is_cancelled_);
+      CANCEL_SAFE_SCOPED_TIMER(recvr_->inactive_timer_, &is_cancelled_);
+      CANCEL_SAFE_SCOPED_TIMER(
+          received_first_batch_ ? nullptr : recvr_->first_batch_wait_total_timer_,
+          &is_cancelled_);
+      data_arrival_cv_.wait(l);
+    }
+
+    if (is_cancelled_) return Status::CANCELLED;
+
+    if (blocked_senders_.empty() && batch_queue_.empty()) {
+      DCHECK_EQ(num_remaining_senders_, 0);
+      return Status::OK();
+    }
+
+    received_first_batch_ = true;
+
+    // Either we'll consume a row batch from batch_queue_, or it's empty. In either case,
+    // take a blocked sender and retry delivering their batch. There is a window between
+    // which a deferred batch is dequeued from blocked_senders_ queue and when it's
+    // inserted into batch_queue_. However, a receiver won't respond to the sender until
+    // the deferred row batch has been inserted. The sender will wait for all in-flight
+    // RPCs to complete before sending EOS RPC so num_remaining_senders_ should be > 0.
+    if (!blocked_senders_.empty()) {
+      recvr_->mgr_->EnqueueRowBatch(
+          {recvr_->fragment_instance_id(), move(blocked_senders_.front())});
+      blocked_senders_.pop();
+    }
+
+    if (!batch_queue_.empty()) {
+      RowBatch* result = batch_queue_.front().second;
+      recvr_->num_buffered_bytes_.Add(-batch_queue_.front().first);
+      VLOG_ROW << "fetched #rows=" << result->num_rows();
+      current_batch_.reset(result);
+      *next_batch = current_batch_.get();
+      batch_queue_.pop_front();
+      return Status::OK();
+    }
+  }
 }
 
-[[noreturn]] KrpcDataStreamRecvr::KrpcDataStreamRecvr() {
-  AbortUnsupportedFeature();
+void KrpcDataStreamRecvr::SenderQueue::AddBatch(const ProtoRowBatch& proto_batch,
+    const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
+    RpcContext* context) {
+  lock_guard<SpinLock> closing_lock(closing_lock_);
+
+  int64_t batch_size = RowBatch::GetDeserializedSize(proto_batch);
+  {
+    unique_lock<SpinLock> l(lock_);
+    DCHECK_GT(num_remaining_senders_, 0);
+    if (UNLIKELY(is_cancelled_)) {
+      Status::OK().ToProto(response->mutable_status());
+      context->RespondSuccess();
+      return;
+    }
+
+    // If there's something in the queue and this batch will push us over the buffer limit
+    // we need to wait until the queue gets drained. We store the rpc context so that we
+    // can signal it at a later time to resend the batch that we couldn't process here.
+    //
+    // Note: It's important that we enqueue proto_batch regardless of buffer limit if
+    // the queue is currently empty. In the case of a merging receiver, batches are
+    // received from a specific queue based on data order, and the pipeline will stall
+    // if the merger is waiting for data from an empty queue that cannot be filled because
+    // the limit has been reached.
+    if (!batch_queue_.empty() && recvr_->ExceedsLimit(batch_size)) {
+      // Enqueue pending sender, return.
+      auto payload =
+          make_unique<TransmitDataCtx>(proto_batch, context, request, response);
+      blocked_senders_.push(move(payload));
+      COUNTER_ADD(recvr_->num_deferred_batches_, 1);
+      return;
+    }
+    COUNTER_ADD(recvr_->num_accepted_batches_, 1);
+    COUNTER_ADD(recvr_->bytes_received_counter_, batch_size);
+    recvr_->num_buffered_bytes_.Add(batch_size);
+  }
+
+  RowBatch* batch = nullptr;
+  {
+    SCOPED_TIMER(recvr_->deserialize_row_batch_timer_);
+    // Note: if this function makes a row batch, the batch *must* be added to
+    // batch_queue_. Close() will handle deleting any unconsumed batches from
+    // batch_queue_. Taking closing_lock_ at the beginning of this method ensures that
+    // Close() cannot run until after the batch is added to the queue.
+    // TODO: move this off this thread.
+    batch = new RowBatch(recvr_->row_desc(), proto_batch, recvr_->mem_tracker());
+  }
+
+  {
+    lock_guard<SpinLock> l(lock_);
+    VLOG_ROW << "added #rows=" << batch->num_rows() << " batch_size=" << batch_size;
+    batch_queue_.push_back(make_pair(batch_size, batch));
+    data_arrival_cv_.notify_one();
+  }
+
+  // Respond to the sender to ack the insertion of the row batches.
+  Status::OK().ToProto(response->mutable_status());
+  context->RespondSuccess();
+}
+
+void KrpcDataStreamRecvr::SenderQueue::DecrementSenders() {
+  lock_guard<SpinLock> l(lock_);
+  DCHECK_GT(num_remaining_senders_, 0);
+  num_remaining_senders_ = max(0, num_remaining_senders_ - 1);
+  VLOG_FILE << "decremented senders: fragment_instance_id="
+            << recvr_->fragment_instance_id()
+            << " node_id=" << recvr_->dest_node_id()
+            << " #senders=" << num_remaining_senders_;
+  if (num_remaining_senders_ == 0) data_arrival_cv_.notify_one();
+}
+
+void KrpcDataStreamRecvr::SenderQueue::Cancel() {
+  {
+    lock_guard<SpinLock> l(lock_);
+    if (is_cancelled_) return;
+    is_cancelled_ = true;
+    VLOG_QUERY << "cancelled stream: fragment_instance_id_="
+               << recvr_->fragment_instance_id()
+               << " node_id=" << recvr_->dest_node_id();
+  }
+  // Wake up all threads waiting to produce/consume batches.  They will all
+  // notice that the stream is cancelled and handle it.
+  data_arrival_cv_.notify_all();
+  PeriodicCounterUpdater::StopTimeSeriesCounter(
+      recvr_->bytes_received_time_series_counter_);
+}
+
+void KrpcDataStreamRecvr::SenderQueue::Close() {
+  lock_guard<SpinLock> c(closing_lock_);
+  lock_guard<SpinLock> l(lock_);
+  // Note that the queue must be cancelled first before it can be closed or we may
+  // risk running into a race which can leak row batches. Please see IMPALA-3034.
+  DCHECK(is_cancelled_);
+
+  // Delete any batches queued in batch_queue_
+  for (const auto& queue_entry: batch_queue_) delete queue_entry.second;
+  while (!blocked_senders_.empty()) {
+    TransmitDataCtx* payload = blocked_senders_.front().release();
+    Status::OK().ToProto(payload->response->mutable_status());
+    payload->context->RespondSuccess();
+    blocked_senders_.pop();
+  }
+
+  current_batch_.reset();
+}
+
+Status KrpcDataStreamRecvr::CreateMerger(const TupleRowComparator& less_than) {
+  DCHECK(is_merging_);
+  vector<SortedRunMerger::RunBatchSupplierFn> input_batch_suppliers;
+  input_batch_suppliers.reserve(sender_queues_.size());
+
+  // Create the merger that will a single stream of sorted rows.
+  merger_.reset(new SortedRunMerger(less_than, row_desc_, profile_, false));
+
+  for (SenderQueue* queue: sender_queues_) {
+    input_batch_suppliers.push_back(
+        [queue](RowBatch** next_batch) -> Status {
+          return queue->GetBatch(next_batch);
+        });
+  }
+
+  RETURN_IF_ERROR(merger_->Prepare(input_batch_suppliers));
+  return Status::OK();
+}
+
+void KrpcDataStreamRecvr::TransferAllResources(RowBatch* transfer_batch) {
+  for (SenderQueue* sender_queue: sender_queues_) {
+    if (sender_queue->current_batch() != nullptr) {
+      sender_queue->current_batch()->TransferResourceOwnership(transfer_batch);
+    }
+  }
+}
+
+KrpcDataStreamRecvr::KrpcDataStreamRecvr(KrpcDataStreamMgr* stream_mgr,
+    MemTracker* parent_tracker, const RowDescriptor* row_desc,
+    const TUniqueId& fragment_instance_id, PlanNodeId dest_node_id, int num_senders,
+    bool is_merging, int64_t total_buffer_limit, RuntimeProfile* profile)
+  : mgr_(stream_mgr),
+    fragment_instance_id_(fragment_instance_id),
+    dest_node_id_(dest_node_id),
+    total_buffer_limit_(total_buffer_limit),
+    row_desc_(row_desc),
+    is_merging_(is_merging),
+    num_buffered_bytes_(0),
+    profile_(profile) {
+  mem_tracker_.reset(new MemTracker(-1, "KrpcDataStreamRecvr", parent_tracker));
+  // Create one queue per sender if is_merging is true.
+  int num_queues = is_merging ? num_senders : 1;
+  sender_queues_.reserve(num_queues);
+  int num_sender_per_queue = is_merging ? 1 : num_senders;
+  for (int i = 0; i < num_queues; ++i) {
+    SenderQueue* queue =
+        sender_queue_pool_.Add(new SenderQueue(this, num_sender_per_queue));
+    sender_queues_.push_back(queue);
+  }
+
+  // Maintain two child profiles - receiver side measurements (from the GetBatch() path),
+  // and sender side measurements (from AddBatch()).
+  RuntimeProfile* recvr_side_profile = profile_->CreateChild("RecvrSide");
+  RuntimeProfile* sender_side_profile = profile_->CreateChild("SenderSide");
+
+  // Initialize the counters
+  bytes_received_counter_ =
+      ADD_COUNTER(recvr_side_profile, "TotalBytesReceived", TUnit::BYTES);
+  bytes_received_time_series_counter_ = ADD_TIME_SERIES_COUNTER(
+      recvr_side_profile, "BytesReceived", bytes_received_counter_);
+  deserialize_row_batch_timer_ =
+      ADD_TIMER(sender_side_profile, "DeserializeRowBatchTimer");
+  inactive_timer_ = profile_->inactive_timer();
+  queue_get_batch_time_ = ADD_TIMER(recvr_side_profile, "TotalGetBatchTime");
+  data_arrival_timer_ =
+      ADD_CHILD_TIMER(recvr_side_profile, "DataArrivalTimer", "TotalGetBatchTime");
+  first_batch_wait_total_timer_ =
+      ADD_TIMER(recvr_side_profile, "FirstBatchArrivalWaitTime");
+  num_deferred_batches_ =
+      ADD_COUNTER(sender_side_profile, "NumBatchesDeferred", TUnit::UNIT);
+  num_accepted_batches_ =
+      ADD_COUNTER(sender_side_profile, "NumBatchesAccepted", TUnit::UNIT);
+}
+
+Status KrpcDataStreamRecvr::GetNext(RowBatch* output_batch, bool* eos) {
+  DCHECK(merger_.get() != nullptr);
+  return merger_->GetNext(output_batch, eos);
+}
+
+void KrpcDataStreamRecvr::AddBatch(const ProtoRowBatch& proto_batch,
+    const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
+    RpcContext* context) {
+  int use_sender_id = is_merging_ ? request->sender_id() : 0;
+  // Add all batches to the same queue if is_merging_ is false.
+  sender_queues_[use_sender_id]->AddBatch(proto_batch, request, response, context);
+}
+
+void KrpcDataStreamRecvr::RemoveSender(int sender_id) {
+  int use_sender_id = is_merging_ ? sender_id : 0;
+  sender_queues_[use_sender_id]->DecrementSenders();
+}
+
+void KrpcDataStreamRecvr::CancelStream() {
+  for (auto& queue: sender_queues_) queue->Cancel();
+}
+
+void KrpcDataStreamRecvr::Close() {
+  // Remove this receiver from the KrpcDataStreamMgr that created it.
+  mgr_->DeregisterRecvr(fragment_instance_id(), dest_node_id());
+  mgr_ = nullptr;
+  for (auto& queue: sender_queues_) queue->Close();
+  merger_.reset();
+  mem_tracker_->Close();
 }
 
 KrpcDataStreamRecvr::~KrpcDataStreamRecvr() {
+  DCHECK(mgr_ == nullptr) << "Must call Close()";
 }
 
-[[noreturn]] Status KrpcDataStreamRecvr::GetBatch(RowBatch** next_batch) {
-  AbortUnsupportedFeature();
-}
-
-[[noreturn]] void KrpcDataStreamRecvr::Close() {
-  AbortUnsupportedFeature();
-}
-
-[[noreturn]] Status KrpcDataStreamRecvr::CreateMerger(const TupleRowComparator& less_than) {
-  AbortUnsupportedFeature();
-}
-
-[[noreturn]] Status KrpcDataStreamRecvr::GetNext(RowBatch* output_batch, bool* eos) {
-  AbortUnsupportedFeature();
-}
-
-[[noreturn]] void KrpcDataStreamRecvr::TransferAllResources(RowBatch* transfer_batch) {
-  AbortUnsupportedFeature();
+Status KrpcDataStreamRecvr::GetBatch(RowBatch** next_batch) {
+  DCHECK(!is_merging_);
+  DCHECK_EQ(sender_queues_.size(), 1);
+  return sender_queues_[0]->GetBatch(next_batch);
 }
 
 } // namespace impala
