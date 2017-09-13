@@ -27,6 +27,7 @@
 #include "util/webserver.h"
 #include "util/default-path-handlers.h"
 #include "util/metrics.h"
+#include "util/openssl-util.h"
 #include "runtime/exec-env.h"
 #include "service/impala-server.h"
 

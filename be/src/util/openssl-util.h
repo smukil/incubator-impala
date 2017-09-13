@@ -93,7 +93,13 @@ class EncryptionKey {
 
   /// An initialization vector to feed as the first block to AES.
   uint8_t iv_[AES_BLOCK_SIZE];
+
 };
+
+// Returns true if, per the process configuration flags, server<->server communications
+// should use SSL.
+bool EnableInternalSslConnections();
+
 }
 
 #endif

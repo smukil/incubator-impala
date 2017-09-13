@@ -575,36 +575,35 @@ void SaslSetMutex() {
 
 
 Status InitAuth(const string& appname) {
-  // We only set up Sasl things if we are indeed going to be using Sasl.
-  // Checking of these flags for sanity is done later, but this check is good
-  // enough at this early stage:
+  // Setup basic callbacks for Sasl. We initialize SASL always since KRPC expects it to
+  // be initialized.
+  // Good idea to have logging everywhere
+  GENERAL_CALLBACKS[0].id = SASL_CB_LOG;
+  GENERAL_CALLBACKS[0].proc = (int (*)())&SaslLogCallback;
+  GENERAL_CALLBACKS[0].context = ((void *)"General");
+
+  int arr_offset = 0;
+  if (!FLAGS_sasl_path.empty()) {
+    // Need this here so we can find available mechanisms
+    GENERAL_CALLBACKS[1].id = SASL_CB_GETPATH;
+    GENERAL_CALLBACKS[1].proc = (int (*)())&SaslGetPath;
+    GENERAL_CALLBACKS[1].context = NULL;
+    arr_offset = 1;
+  }
+
+  // Allows us to view and set some options
+  GENERAL_CALLBACKS[1 + arr_offset].id = SASL_CB_GETOPT;
+  GENERAL_CALLBACKS[1 + arr_offset].proc = (int (*)())&SaslGetOption;
+  GENERAL_CALLBACKS[1 + arr_offset].context = NULL;
+
+  // For curiosity, let's see what files are being touched.
+  GENERAL_CALLBACKS[2 + arr_offset].id = SASL_CB_VERIFYFILE;
+  GENERAL_CALLBACKS[2 + arr_offset].proc = (int (*)())&SaslVerifyFile;
+  GENERAL_CALLBACKS[2 + arr_offset].context = NULL;
+
+  GENERAL_CALLBACKS[3 + arr_offset].id = SASL_CB_LIST_END;
+
   if (FLAGS_enable_ldap_auth || !FLAGS_principal.empty()) {
-    // Good idea to have logging everywhere
-    GENERAL_CALLBACKS[0].id = SASL_CB_LOG;
-    GENERAL_CALLBACKS[0].proc = (int (*)())&SaslLogCallback;
-    GENERAL_CALLBACKS[0].context = ((void *)"General");
-
-    int arr_offset = 0;
-    if (!FLAGS_sasl_path.empty()) {
-      // Need this here so we can find available mechanisms
-      GENERAL_CALLBACKS[1].id = SASL_CB_GETPATH;
-      GENERAL_CALLBACKS[1].proc = (int (*)())&SaslGetPath;
-      GENERAL_CALLBACKS[1].context = NULL;
-      arr_offset = 1;
-    }
-
-    // Allows us to view and set some options
-    GENERAL_CALLBACKS[1 + arr_offset].id = SASL_CB_GETOPT;
-    GENERAL_CALLBACKS[1 + arr_offset].proc = (int (*)())&SaslGetOption;
-    GENERAL_CALLBACKS[1 + arr_offset].context = NULL;
-
-    // For curiosity, let's see what files are being touched.
-    GENERAL_CALLBACKS[2 + arr_offset].id = SASL_CB_VERIFYFILE;
-    GENERAL_CALLBACKS[2 + arr_offset].proc = (int (*)())&SaslVerifyFile;
-    GENERAL_CALLBACKS[2 + arr_offset].context = NULL;
-
-    GENERAL_CALLBACKS[3 + arr_offset].id = SASL_CB_LIST_END;
-
     if (!FLAGS_principal.empty()) {
       // Callbacks for when we're a Kerberos Sasl internal connection.  Just do logging.
       KERB_INT_CALLBACKS.resize(3);
@@ -654,16 +653,9 @@ Status InitAuth(const string& appname) {
       LDAP_EXT_CALLBACKS[3].id = SASL_CB_LIST_END;
     }
 
-    SaslSetMutex();
-    try {
-      // We assume all impala processes are both server and client.
-      sasl::TSaslServer::SaslInit(GENERAL_CALLBACKS, appname);
-      sasl::TSaslClient::SaslInit(GENERAL_CALLBACKS);
-    } catch (sasl::SaslServerImplException& e) {
-      stringstream err_msg;
-      err_msg << "Could not initialize Sasl library: " << e.what();
-      return Status(err_msg.str());
-    }
+    LOG (INFO) << "Disabling SASL initialization";
+    KUDU_RETURN_IF_ERROR(kudu::rpc::DisableSaslInitialization(),
+        "Unable to disable Kudu RPC SASL initialization.");
 
     // Kudu client shouldn't attempt to initialize SASL which would conflict with
     // Impala's SASL initialization. This must be called before any KuduClients are
@@ -673,16 +665,24 @@ Status InitAuth(const string& appname) {
       KUDU_RETURN_IF_ERROR(kudu::client::DisableSaslInitialization(),
           "Unable to disable Kudu SASL initialization.");
     }
-    KUDU_RETURN_IF_ERROR(kudu::rpc::DisableSaslInitialization(),
-        "Unable to disable Kudu RPC SASL initialization.");
+  }
 
-
-    // Add our auxprop plugin, which gives us a hook before authentication
-    int rc = sasl_auxprop_add_plugin(IMPALA_AUXPROP_PLUGIN.c_str(), &ImpalaAuxpropInit);
-    if (rc != SASL_OK) {
-      return Status(Substitute("Error adding Sasl auxprop plugin: $0",
-              sasl_errstring(rc, NULL, NULL)));
-    }
+  SaslSetMutex();
+  try {
+    // We assume all impala processes are both server and client.
+    sasl::TSaslServer::SaslInit(GENERAL_CALLBACKS, appname);
+    sasl::TSaslClient::SaslInit(GENERAL_CALLBACKS);
+  } catch (sasl::SaslServerImplException& e) {
+    stringstream err_msg;
+    err_msg << "Could not initialize Sasl library: " << e.what();
+    return Status(err_msg.str());
+  }
+  
+  // Add our auxprop plugin, which gives us a hook before authentication
+  int rc = sasl_auxprop_add_plugin(IMPALA_AUXPROP_PLUGIN.c_str(), &ImpalaAuxpropInit);
+  if (rc != SASL_OK) {
+    return Status(Substitute("Error adding Sasl auxprop plugin: $0",
+            sasl_errstring(rc, NULL, NULL)));
   }
 
   // Initializes OpenSSL.

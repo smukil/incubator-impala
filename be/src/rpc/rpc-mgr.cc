@@ -22,8 +22,10 @@
 #include "kudu/rpc/rpc_controller.h"
 #include "kudu/rpc/service_if.h"
 #include "kudu/util/net/net_util.h"
+#include "testutil/scoped-flag-setter.h"
 #include "util/cpu-info.h"
 #include "util/network-util.h"
+#include "util/openssl-util.h"
 
 #include "common/names.h"
 
@@ -49,6 +51,18 @@ DEFINE_int32(num_reactor_threads, 0,
 DEFINE_int32(rpc_retry_interval_ms, 5,
     "Time in millisecond of waiting before retrying an RPC when remote is busy");
 
+DECLARE_string(ssl_client_ca_certificate);
+DECLARE_string(ssl_server_certificate);
+DECLARE_string(ssl_private_key);
+DECLARE_string(ssl_private_key_password_cmd);
+DECLARE_string(ssl_cipher_list);
+
+// KuduRPC flags
+DECLARE_string(rpc_certificate_file);
+DECLARE_string(rpc_private_key_file);
+DECLARE_string(rpc_ca_certificate_file);
+DECLARE_string(rpc_private_key_password_cmd);
+
 namespace impala {
 
 Status RpcMgr::Init() {
@@ -58,7 +72,22 @@ Status RpcMgr::Init() {
   int num_reactor_threads =
       FLAGS_num_reactor_threads > 0 ? FLAGS_num_reactor_threads : CpuInfo::num_cores();
   bld.set_num_reactors(num_reactor_threads).set_metric_entity(entity);
-  KUDU_RETURN_IF_ERROR(bld.Build(&messenger_), "Could not build messenger");
+  if (EnableInternalSslConnections()) {
+    LOG (INFO) << "Initing with SSL";
+    auto cert_flag = ScopedFlagSetter<string>::Make(&FLAGS_rpc_certificate_file,
+        FLAGS_ssl_server_certificate);
+    auto pkey_flag = ScopedFlagSetter<string>::Make(&FLAGS_rpc_private_key_file,
+        FLAGS_ssl_private_key);
+    auto ca_flag = ScopedFlagSetter<string>::Make(&FLAGS_rpc_ca_certificate_file,
+        FLAGS_ssl_client_ca_certificate);
+
+    // TODO: Cipher list and password key command.
+    bld.enable_inbound_tls();
+    KUDU_RETURN_IF_ERROR(bld.Build(&messenger_), "Could not build messenger");
+  } else {
+    // Build messenger without setting the TLS flags.
+    KUDU_RETURN_IF_ERROR(bld.Build(&messenger_), "Could not build messenger");
+  }
   return Status::OK();
 }
 

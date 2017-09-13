@@ -67,6 +67,7 @@
 #include "util/impalad-metrics.h"
 #include "util/lineage-util.h"
 #include "util/network-util.h"
+#include "util/openssl-util.h"
 #include "util/parse-util.h"
 #include "util/redactor.h"
 #include "util/runtime-profile-counters.h"

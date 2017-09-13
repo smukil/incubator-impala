@@ -30,8 +30,9 @@
 #include "statestore/statestore.h"
 #include "util/common-metrics.h"
 #include "util/debug-util.h"
-#include "util/metrics.h"
 #include "util/memory-metrics.h"
+#include "util/metrics.h"
+#include "util/openssl-util.h"
 #include "util/webserver.h"
 #include "util/default-path-handlers.h"
 

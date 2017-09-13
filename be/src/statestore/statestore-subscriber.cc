@@ -32,8 +32,9 @@
 #include "rpc/rpc-trace.h"
 #include "rpc/thrift-util.h"
 #include "statestore/statestore-service-client-wrapper.h"
-#include "util/time.h"
 #include "util/debug-util.h"
+#include "util/openssl-util.h"
+#include "util/time.h"
 
 #include "common/names.h"
 
