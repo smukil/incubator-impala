@@ -21,6 +21,7 @@
 #include "rpc/authentication.h"
 #include "rpc/thrift-server.h"
 #include "util/network-util.h"
+#include "util/openssl-util.h"
 #include "util/thread.h"
 
 #include <ldap.h>

@@ -29,6 +29,7 @@
 #include "statestore/statestore-subscriber-client-wrapper.h"
 #include "util/debug-util.h"
 #include "util/logging-support.h"
+#include "util/openssl-util.h"
 #include "util/time.h"
 #include "util/uid-util.h"
 #include "util/webserver.h"
