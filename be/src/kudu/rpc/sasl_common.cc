@@ -212,6 +212,7 @@ static bool SaslMutexImplementationProvided() {
 // Actually perform the initialization for the SASL subsystem.
 // Meant to be called via GoogleOnceInit().
 static void DoSaslInit() {
+  LOG (INFO) << "Called from: " << GetStackTrace();
   VLOG(3) << "Initializing SASL library";
 
   bool sasl_initialized = SaslIsInitialized();

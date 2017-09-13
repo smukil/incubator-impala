@@ -32,6 +32,7 @@
 #include "kudu/util/status.h"
 #include "rpc/authentication.h"
 #include "testutil/gtest-util.h"
+#include "testutil/scoped-flag-setter.h"
 #include "util/counting-barrier.h"
 #include "util/filesystem-util.h"
 #include "util/network-util.h"
@@ -62,9 +63,26 @@ DECLARE_string(keytab_file);
 DECLARE_string(principal);
 DECLARE_string(krb5_conf);
 
+DECLARE_string(ssl_client_ca_certificate);
+DECLARE_string(ssl_server_certificate);
+DECLARE_string(ssl_private_key);
+DECLARE_string(ssl_private_key_password_cmd);
+
 namespace impala {
 
 static int32_t SERVICE_PORT = FindUnusedEphemeralPort(nullptr);
+
+string IMPALA_HOME(getenv("IMPALA_HOME"));
+const string& SERVER_CERT =
+    Substitute("$0/be/src/testutil/server-cert.pem", IMPALA_HOME);
+const string& PRIVATE_KEY =
+    Substitute("$0/be/src/testutil/server-key.pem", IMPALA_HOME);
+const string& BAD_SERVER_CERT =
+    Substitute("$0/be/src/testutil/bad-cert.pem", IMPALA_HOME);
+const string& BAD_PRIVATE_KEY =
+    Substitute("$0/be/src/testutil/bad-key.pem", IMPALA_HOME);
+const string& PASSWORD_PROTECTED_PRIVATE_KEY =
+    Substitute("$0/be/src/testutil/server-key-password.pem", IMPALA_HOME);
 
 #define PAYLOAD_SIZE (4096)
 
@@ -85,11 +103,14 @@ template <class T> class RpcMgrTestBase : public T {
     IpAddr ip;
     ASSERT_OK(HostnameToIpAddr(FLAGS_hostname, &ip));
     krpc_address_ = MakeNetworkAddress(ip, SERVICE_PORT);
-    ASSERT_OK(rpc_mgr_.Init());
+    //ASSERT_OK(rpc_mgr_.Init());
+    string current_executable_path;
+    ASSERT_TRUE(kudu::Env::Default()->GetExecutablePath(&current_executable_path).ok());
+    ASSERT_OK(InitAuth(current_executable_path));
   }
 
   virtual void TearDown() {
-    rpc_mgr_.Shutdown();
+    //rpc_mgr_.Shutdown();
   }
 
   // Utility function to initialize the parameter for ScanMem RPC.
@@ -147,9 +168,6 @@ class RpcMgrParamsTest : public RpcMgrTestBase<testing::TestWithParam<KerberosSw
       FLAGS_principal = Substitute("$0@$1", spn, realm);
 
     }
-    string current_executable_path;
-    ASSERT_TRUE(kudu::Env::Default()->GetExecutablePath(&current_executable_path).ok());
-    ASSERT_OK(InitAuth(current_executable_path));
     RpcMgrTestBase::SetUp();
   }
 
@@ -251,6 +269,60 @@ INSTANTIATE_TEST_CASE_P(KerberosOnAndOff,
                         ::testing::Values(KERBEROS_OFF, KERBEROS_ON));
 
 TEST_P(RpcMgrParamsTest, MultipleServices) {
+  ASSERT_OK(rpc_mgr_.Init());
+  // Test that a service can be started, and will respond to requests.
+  unique_ptr<ServiceIf> ping_impl(
+      new PingServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker()));
+  ASSERT_OK(rpc_mgr_.RegisterService(10, 10, move(ping_impl)));
+
+  // Test that a second service, that verifies the RPC payload is not corrupted,
+  // can be started.
+  unique_ptr<ServiceIf> scan_mem_impl(
+      new ScanMemServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker()));
+  ASSERT_OK(rpc_mgr_.RegisterService(10, 10, move(scan_mem_impl)));
+
+  FLAGS_num_acceptor_threads = 2;
+  FLAGS_num_reactor_threads = 10;
+  ASSERT_OK(rpc_mgr_.StartServices(krpc_address_));
+
+  unique_ptr<PingServiceProxy> ping_proxy;
+  ASSERT_OK(rpc_mgr_.GetProxy<PingServiceProxy>(krpc_address_, &ping_proxy));
+
+  unique_ptr<ScanMemServiceProxy> scan_mem_proxy;
+  ASSERT_OK(rpc_mgr_.GetProxy<ScanMemServiceProxy>(krpc_address_, &scan_mem_proxy));
+
+  RpcController controller;
+  srand(0);
+  // Randomly invoke either services to make sure a RpcMgr can host multiple
+  // services at the same time.
+  for (int i = 0; i < 100; ++i) {
+    controller.Reset();
+    if (random() % 2 == 0) {
+      PingRequestPB request;
+      PingResponsePB response;
+      kudu::Status status = ping_proxy->Ping(request, &response, &controller);
+      ASSERT_TRUE(status.ok());
+      ASSERT_EQ(response.int_response(), 42);
+    } else {
+      ScanMemRequestPB request;
+      ScanMemResponsePB response;
+      SetupScanMemRequest(&request, &controller);
+      kudu::Status status = scan_mem_proxy->ScanMem(request, &response, &controller);
+      ASSERT_TRUE(status.ok());
+    }
+  }
+  rpc_mgr_.Shutdown();
+}
+
+TEST_P(RpcMgrParamsTest, MultipleServicesTlsTest) {
+  auto cert_flag =
+      ScopedFlagSetter<string>::Make(&FLAGS_ssl_server_certificate, SERVER_CERT);
+  auto pkey_flag =
+      ScopedFlagSetter<string>::Make(&FLAGS_ssl_private_key, PRIVATE_KEY);
+  auto ca_flag =
+      ScopedFlagSetter<string>::Make(&FLAGS_ssl_client_ca_certificate, SERVER_CERT);
+  
+  ASSERT_OK(rpc_mgr_.Init());
   // Test that a service can be started, and will respond to requests.
   unique_ptr<ServiceIf> ping_impl(
       new PingServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker()));
@@ -296,6 +368,7 @@ TEST_P(RpcMgrParamsTest, MultipleServices) {
 
 TEST_F(RpcMgrTest, SlowCallback) {
 
+  ASSERT_OK(rpc_mgr_.Init());
   // Use a callback which is slow to respond.
   auto slow_cb = [](RpcContext* ctx) {
     SleepForMs(300);
@@ -330,6 +403,7 @@ TEST_F(RpcMgrTest, SlowCallback) {
 }
 
 TEST_F(RpcMgrTest, AsyncCall) {
+  ASSERT_OK(rpc_mgr_.Init());
   unique_ptr<ServiceIf> scan_mem_impl(
       new ScanMemServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker()));
   ASSERT_OK(rpc_mgr_.RegisterService(10, 10, move(scan_mem_impl)));
