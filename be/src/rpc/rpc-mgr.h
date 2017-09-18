@@ -21,10 +21,12 @@
 #include "common/status.h"
 #include "kudu/rpc/messenger.h"
 #include "kudu/rpc/result_tracker.h"
-#include "kudu/rpc/service_pool.h"
 #include "kudu/util/metrics.h"
+#include "rpc/impala-service-pool.h"
 
 #include "gen-cpp/Types_types.h"
+
+#include <rapidjson/document.h>
 
 namespace kudu {
 namespace rpc {
@@ -141,6 +143,8 @@ class RpcMgr {
   /// 'rpc_controller' should contain the status of the last RPC call.
   static bool IsServerTooBusy(const kudu::rpc::RpcController& rpc_controller);
 
+  void ToJson(rapidjson::Document* doc);
+
   const scoped_refptr<kudu::rpc::ResultTracker> result_tracker() const {
     return tracker_;
   }
@@ -157,8 +161,8 @@ class RpcMgr {
   }
 
  private:
-  /// One pool per registered service. scoped_refptr<> is dictated by the Kudu interface.
-  std::vector<scoped_refptr<kudu::rpc::ServicePool>> service_pools_;
+  /// One pool per registered service.
+  std::vector<scoped_refptr<ImpalaServicePool>> service_pools_;
 
   /// Required Kudu boilerplate for constructing the MetricEntity passed
   /// to c'tor of ServiceIf when creating a service.

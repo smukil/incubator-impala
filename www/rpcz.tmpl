@@ -18,6 +18,123 @@ under the License.
 -->
 {{> www/common-header.tmpl }}
 
+<h2>KRPC Services</h2>
+<table class='table table-hover'>
+  <thead>
+    <tr><td>
+      <table class ='table table-hover table-bordered'>
+        <tr><td colspan="2"><h4>RpcMgr Metrics:</h4></td></tr>
+        <tr>
+          <td>Number of inbound calls in flight</td><td>{{num_inbound_calls_in_flight}}</td>
+        </tr>
+        <tr>
+          <td>Number of outbound calls in filght</td><td>{{num_outbound_calls_in_flight}}</td>
+        </tr>
+      </table>
+    </tr></td>
+  </thead>
+  <tbody>
+  {{#services}}
+    <tr>
+      <td>
+      <table class='table table-hover table-bordered'>
+        <thead>
+          <tr><td><h4>Service: <b>{{service_name}}</b></h4></td></tr>
+        </thead>
+        <tbody>
+        <tr>
+          <td>
+            <table class='table table-hover'>
+              <tr>
+                <th>Queue Size</th>
+                <th>Idle threads</th>
+                <th>Maximum Queue Size</th>
+                <th>RPCs timed out in queue</th>
+                <th>RPCs rejected due to queue overflow</th>
+              </tr>
+              <tr>
+                <td>{{queue_size}}</td>
+                <td>{{idle_threads}}</td>
+                <td>{{service_max_queue_size}}</td>
+                <td>{{rpcs_timed_out_in_queue}}</td>
+                <td>{{rpcs_queue_overflow}}</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td>
+            <table class='table table-hover'>
+            {{#rpc_method_metrics}}
+              <tr><td colspan=9>
+                <strong>Method: <i>{{method_name}}</i>    | </strong>
+                {{#handling_time_histogram}}
+                <strong>(Count: <i>{{count}}</i>;</strong>
+                {{/handling_time_histogram}}
+                <strong>Num. in handlers: <i>{{num_in_handlers}}</i>)</strong>
+              </td></tr>
+              <tr>
+                <th></th>
+                <th>Min</th>
+                <th>Max</th>
+                <th>25th %ile</th>
+                <th>50th %ile</th>
+                <th>75th %ile</th>
+                <th>90th %ile</th>
+                <th>95th %ile</th>
+                <th>99.9th %ile</th>
+              <tr>
+              </tr>
+              {{#queueing_time_histogram}}
+                <td>Queueing time (ms)</td>
+                <td>{{min}}ms</td>
+                <td>{{max}}ms</td>
+                <td>{{25th %-ile}}ms</td>
+                <td>{{50th %-ile}}ms</td>
+                <td>{{75th %-ile}}ms</td>
+                <td>{{90th %-ile}}ms</td>
+                <td>{{95th %-ile}}ms</td>
+                <td>{{"99.9th %-ile"}}ms</td>
+              {{/queueing_time_histogram}}
+              </tr>
+              </tr>
+              {{#handling_time_histogram}}
+                <td>Handling time (ms)</td>
+                <td>{{min}}ms</td>
+                <td>{{max}}ms</td>
+                <td>{{25th %-ile}}ms</td>
+                <td>{{50th %-ile}}ms</td>
+                <td>{{75th %-ile}}ms</td>
+                <td>{{90th %-ile}}ms</td>
+                <td>{{95th %-ile}}ms</td>
+                <td>{{"99.9th %-ile"}}ms</td>
+              {{/handling_time_histogram}}
+              </tr>
+              <tr>
+              {{#payload_size_histogram}}
+                <td>Payload size (bytes)</td>
+                <td>{{min}}B</td>
+                <td>{{max}}B</td>
+                <td>{{25th %-ile}}B</td>
+                <td>{{50th %-ile}}B</td>
+                <td>{{75th %-ile}}B</td>
+                <td>{{90th %-ile}}B</td>
+                <td>{{95th %-ile}}B</td>
+                <td>{{"99.9th %-ile"}}B</td>
+              {{/payload_size_histogram}}
+              </tr>
+            {{/rpc_method_metrics}}
+            </table>
+          </td>
+        </tr>
+        </tbody>
+      </table>
+      </td>
+    </tr>
+  {{/services}}
+  </tbody>
+</table>
+
 <h2>RPC durations
   <button class="btn btn-warning btn-xs" onClick="reset_all();">
     Reset all

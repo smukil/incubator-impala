@@ -28,8 +28,10 @@ set_source_files_properties(${RPC_TEST_PROTO_SRCS} PROPERTIES GENERATED TRUE)
 add_library(Rpc
   authentication.cc
   ${COMMON_PROTO_SRCS}
+  impala-service-pool.cc
   rpc-mgr.cc
   rpc-trace.cc
+  impala-service-pool.cc
   TAcceptQueueServer.cpp
   thrift-util.cc
   thrift-client.cc

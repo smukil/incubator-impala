@@ -20,6 +20,7 @@
 #include "exec/kudu-util.h"
 #include "kudu/rpc/acceptor_pool.h"
 #include "kudu/rpc/rpc_controller.h"
+#include "kudu/rpc/rpc_introspection.pb.h"
 #include "kudu/rpc/service_if.h"
 #include "kudu/util/net/net_util.h"
 #include "util/cpu-info.h"
@@ -27,15 +28,18 @@
 
 #include "common/names.h"
 
-using kudu::rpc::MessengerBuilder;
-using kudu::rpc::Messenger;
-using kudu::rpc::AcceptorPool;
-using kudu::rpc::RpcController;
-using kudu::rpc::ServiceIf;
-using kudu::rpc::ServicePool;
-using kudu::Sockaddr;
 using kudu::HostPort;
 using kudu::MetricEntity;
+using kudu::rpc::AcceptorPool;
+using kudu::rpc::DumpRunningRpcsRequestPB;
+using kudu::rpc::DumpRunningRpcsResponsePB;
+using kudu::rpc::MessengerBuilder;
+using kudu::rpc::Messenger;
+using kudu::rpc::RpcCallInProgressPB;
+using kudu::rpc::RpcConnectionPB;
+using kudu::rpc::RpcController;
+using kudu::rpc::ServiceIf;
+using kudu::Sockaddr;
 
 DECLARE_string(hostname);
 
@@ -46,6 +50,8 @@ DEFINE_int32(num_reactor_threads, 0,
     "default value 0, it will be set to number of CPU cores.");
 DEFINE_int32(rpc_retry_interval_ms, 5,
     "Time in millisecond of waiting before retrying an RPC when remote is busy");
+
+using namespace rapidjson;
 
 namespace impala {
 
@@ -64,17 +70,19 @@ Status RpcMgr::RegisterService(int32_t num_service_threads, int32_t service_queu
     unique_ptr<ServiceIf> service_ptr) {
   DCHECK(is_inited()) << "Must call Init() before RegisterService()";
   DCHECK(!services_started_) << "Cannot call RegisterService() after StartServices()";
-  scoped_refptr<ServicePool> service_pool =
-      new ServicePool(gscoped_ptr<ServiceIf>(service_ptr.release()),
+  scoped_refptr<ImpalaServicePool> service_pool =
+      new ImpalaServicePool(std::move(service_ptr),
           messenger_->metric_entity(), service_queue_depth);
   // Start the thread pool first before registering the service in case the startup fails.
-  KUDU_RETURN_IF_ERROR(
-      service_pool->Init(num_service_threads), "Service pool failed to start");
+  RETURN_IF_ERROR(
+      service_pool->Init(num_service_threads));
   KUDU_RETURN_IF_ERROR(
       messenger_->RegisterService(service_pool->service_name(), service_pool),
       "Could not register service");
-  service_pools_.push_back(service_pool);
+
   VLOG_QUERY << "Registered KRPC service: " << service_pool->service_name();
+  service_pools_.push_back(std::move(service_pool));
+
   return Status::OK();
 }
 
@@ -112,6 +120,35 @@ bool RpcMgr::IsServerTooBusy(const RpcController& rpc_controller) {
   const kudu::rpc::ErrorStatusPB* err = rpc_controller.error_response();
   return status.IsRemoteError() && err != nullptr && err->has_code() &&
       err->code() == kudu::rpc::ErrorStatusPB::ERROR_SERVER_TOO_BUSY;
+}
+
+void RpcMgr::ToJson(Document* document) {
+  if (messenger_.get() == nullptr) return;
+
+  DumpRunningRpcsResponsePB response;
+  this->messenger_->DumpRunningRpcs(DumpRunningRpcsRequestPB(), &response);
+
+  int32_t num_inbound_calls_in_flight = 0;
+  int32_t num_outbound_calls_in_flight = 0;
+
+  for (const RpcConnectionPB& conn : response.inbound_connections()) {
+    num_inbound_calls_in_flight += conn.calls_in_flight().size();
+  }
+  for (const RpcConnectionPB& conn : response.outbound_connections()) {
+    num_inbound_calls_in_flight += conn.calls_in_flight().size();
+  }
+
+  document->AddMember("num_inbound_calls_in_flight", num_inbound_calls_in_flight,
+      document->GetAllocator());
+  document->AddMember("num_outbound_calls_in_flight", num_outbound_calls_in_flight,
+      document->GetAllocator());
+  Value services(kArrayType);
+  for (auto service_pool : service_pools_) {
+    Value service_entry(kObjectType);
+    service_pool->ToJson(&service_entry, document);
+    services.PushBack(service_entry, document->GetAllocator());
+  }
+  document->AddMember("services", services, document->GetAllocator());
 }
 
 } // namespace impala

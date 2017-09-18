@@ -22,6 +22,7 @@
 #include <gutil/strings/substitute.h>
 
 #include "common/logging.h"
+#include "rpc/rpc-mgr.h"
 #include "util/debug-util.h"
 #include "util/time.h"
 #include "util/webserver.h"
@@ -54,6 +55,13 @@ class RpcEventHandlerManager {
   // resets the statistics for a single method only. Produces no JSON output.
   void ResetCallback(const Webserver::ArgumentMap& args, Document* document);
 
+  // If this is called, 'rpc_mgr' will be tracked for RPC Event Tracing. Must be called
+  // before any call to RegisterEventHandler().
+  // 'rpc_mgr' should point to a valid RpcMgr.
+  // TODO: This entire class was built for tracking metrics obtained from Thrift. Consider
+  // refactoring as we slowly drop support for Thrift in our internal services.
+  void TrackKuduRpcMgr(RpcMgr* rpc_mgr);
+
  private:
   // Protects event_handlers_
   mutex lock_;
@@ -64,13 +72,19 @@ class RpcEventHandlerManager {
   // after they are started, event handlers have a lifetime equivalent to the length of
   // the process.
   vector<RpcEventHandler*> event_handlers_;
+
+  // Set if TrackKuduRpcMgr() is called. Not owned, but the object must be guaranteed to
+  // live as long as the process lives.
+  RpcMgr* rpc_mgr_ = nullptr;
 };
 
 // Only instance of RpcEventHandlerManager
 scoped_ptr<RpcEventHandlerManager> handler_manager;
 
-void impala::InitRpcEventTracing(Webserver* webserver) {
+void impala::InitRpcEventTracing(Webserver* webserver, RpcMgr* rpc_mgr) {
   handler_manager.reset(new RpcEventHandlerManager());
+  if (rpc_mgr) handler_manager->TrackKuduRpcMgr(rpc_mgr);
+
   if (webserver != NULL) {
     Webserver::UrlCallback json = bind<void>(
         mem_fn(&RpcEventHandlerManager::JsonCallback), handler_manager.get(), _1, _2);
@@ -80,6 +94,12 @@ void impala::InitRpcEventTracing(Webserver* webserver) {
         mem_fn(&RpcEventHandlerManager::ResetCallback), handler_manager.get(), _1, _2);
     webserver->RegisterUrlCallback("/rpcz_reset", "", reset, false);
   }
+}
+
+void RpcEventHandlerManager::TrackKuduRpcMgr(RpcMgr* rpc_mgr) {
+  DCHECK(rpc_mgr);
+  DCHECK(event_handlers_.empty());
+  rpc_mgr_ = rpc_mgr;
 }
 
 void RpcEventHandlerManager::RegisterEventHandler(RpcEventHandler* event_handler) {
@@ -98,6 +118,8 @@ void RpcEventHandlerManager::JsonCallback(const Webserver::ArgumentMap& args,
     servers.PushBack(server, document->GetAllocator());
   }
   document->AddMember("servers", servers, document->GetAllocator());
+
+  if (rpc_mgr_) rpc_mgr_->ToJson(document);
 }
 
 void RpcEventHandlerManager::ResetCallback(const Webserver::ArgumentMap& args,
