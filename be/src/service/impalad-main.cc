@@ -55,6 +55,7 @@ DECLARE_int32(hs2_port);
 DECLARE_int32(be_port);
 DECLARE_bool(enable_rm);
 DECLARE_bool(is_coordinator);
+DECLARE_bool(use_krpc);
 
 int ImpaladMain(int argc, char** argv) {
   InitCommonRuntime(argc, argv, true);
@@ -81,7 +82,11 @@ int ImpaladMain(int argc, char** argv) {
   ABORT_IF_ERROR(StartMemoryMaintenanceThread()); // Memory metrics are created in Init().
   ABORT_IF_ERROR(
       StartThreadInstrumentation(exec_env.metrics(), exec_env.webserver(), true));
-  InitRpcEventTracing(exec_env.webserver());
+  if (FLAGS_use_krpc) {
+    InitRpcEventTracing(exec_env.webserver(), exec_env.rpc_mgr());
+  } else {
+    InitRpcEventTracing(exec_env.webserver());
+  }
 
   boost::shared_ptr<ImpalaServer> impala_server(new ImpalaServer(&exec_env));
   Status status =
