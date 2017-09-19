@@ -55,6 +55,7 @@ DECLARE_int32(hs2_port);
 DECLARE_int32(be_port);
 DECLARE_bool(enable_rm);
 DECLARE_bool(is_coordinator);
+DECLARE_bool(use_krpc);
 
 int ImpaladMain(int argc, char** argv) {
   InitCommonRuntime(argc, argv, true);
@@ -79,7 +80,11 @@ int ImpaladMain(int argc, char** argv) {
   ExecEnv exec_env;
   ABORT_IF_ERROR(
       StartThreadInstrumentation(exec_env.metrics(), exec_env.webserver(), true));
-  InitRpcEventTracing(exec_env.webserver());
+  if (FLAGS_use_krpc) {
+    InitRpcEventTracing(exec_env.webserver(), exec_env.rpc_mgr());
+  } else {
+    InitRpcEventTracing(exec_env.webserver());
+  }
 
   CommonMetrics::InitCommonMetrics(exec_env.metrics());
 

@@ -80,7 +80,7 @@ DEFINE_int32(state_store_subscriber_port, 23000,
 DEFINE_int32(num_hdfs_worker_threads, 16,
     "(Advanced) The number of threads in the global HDFS operation pool");
 DEFINE_bool(disable_admission_control, false, "Disables admission control.");
-DEFINE_bool_hidden(use_krpc, false, "Used to indicate whether to use KRPC for the "
+DEFINE_bool_hidden(use_krpc, true, "Used to indicate whether to use KRPC for the "
     "DataStream subsystem, or the Thrift RPC layer instead. Defaults to false. "
     "KRPC not yet supported");
 

@@ -15,62 +15,51 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include "kudu/rpc/service_pool.h"
+#include "rpc/impala-service-pool.h"
 
+#include <boost/thread/mutex.hpp>
 #include <glog/logging.h>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "exec/kudu-util.h"
 #include "kudu/gutil/gscoped_ptr.h"
 #include "kudu/gutil/ref_counted.h"
 #include "kudu/gutil/strings/join.h"
-#include "kudu/gutil/strings/substitute.h"
 #include "kudu/rpc/inbound_call.h"
 #include "kudu/rpc/messenger.h"
 #include "kudu/rpc/service_if.h"
 #include "kudu/rpc/service_queue.h"
-#include "kudu/util/logging.h"
 #include "kudu/util/metrics.h"
 #include "kudu/util/status.h"
-#include "kudu/util/thread.h"
 #include "kudu/util/trace.h"
 
 #include "common/status.h"
 
+using boost::lock_guard;
+using boost::mutex;
 using std::shared_ptr;
 using strings::Substitute;
 
-METRIC_DEFINE_histogram(server, rpc_incoming_queue_time,
-                        "RPC Queue Time",
-                        kudu::MetricUnit::kMicroseconds,
-                        "Number of microseconds incoming RPC requests spend in the worker queue",
-                        60000000LU, 3);
+METRIC_DEFINE_histogram(server, impala_unused,
+    "RPC Queue Time",
+    kudu::MetricUnit::kMicroseconds,
+    "Number of microseconds incoming RPC requests spend in the worker queue",
+    60000000LU, 3);
 
-METRIC_DEFINE_counter(server, rpcs_timed_out_in_queue,
-                      "RPC Queue Timeouts",
-                      kudu::MetricUnit::kRequests,
-                      "Number of RPCs whose timeout elapsed while waiting "
-                      "in the service queue, and thus were not processed.");
+namespace impala {
 
-METRIC_DEFINE_counter(server, rpcs_queue_overflow,
-                      "RPC Queue Overflows",
-                      kudu::MetricUnit::kRequests,
-                      "Number of RPCs dropped because the service queue "
-                      "was full.");
-
-namespace kudu {
-namespace rpc {
-
-ImpalaServicePool::ImpalaServicePool(gscoped_ptr<ServiceIf> service,
-                         const scoped_refptr<MetricEntity>& entity,
+ImpalaServicePool::ImpalaServicePool(std::unique_ptr<kudu::rpc::ServiceIf> service,
+                         const scoped_refptr<kudu::MetricEntity>& entity,
                          size_t service_queue_length)
   : service_(std::move(service)),
     service_queue_(service_queue_length),
-    incoming_queue_time_(METRIC_rpc_incoming_queue_time.Instantiate(entity)),
-    rpcs_timed_out_in_queue_(METRIC_rpcs_timed_out_in_queue.Instantiate(entity)),
-    rpcs_queue_overflow_(METRIC_rpcs_queue_overflow.Instantiate(entity)),
-    closing_(false) {
+    unused_histogram_(METRIC_impala_unused.Instantiate(entity)) {
+  string name = Substitute("$0-incoming-queue-time", service_->service_name());
+  incoming_queue_time_.reset(new HistogramMetric(
+      MakeTMetricDef(name, TMetricKind::HISTOGRAM, TUnit::TIME_MS),
+      30000, 3));
 }
 
 ImpalaServicePool::~ImpalaServicePool() {
@@ -79,10 +68,9 @@ ImpalaServicePool::~ImpalaServicePool() {
 
 Status ImpalaServicePool::Init(int num_threads) {
   for (int i = 0; i < num_threads; i++) {
-    std::unique_ptr<impala::Thread> new_thread;
-    impala::Status s = impala::Thread::Create("service pool", "rpc worker",
-        &ImpalaServicePool::RunThread, this, &new_thread);
-    if (!s.ok()) return Status::RuntimeError(s.GetDetail());
+    std::unique_ptr<Thread> new_thread;
+    RETURN_IF_ERROR(Thread::Create("service pool", "rpc worker",
+        &ImpalaServicePool::RunThread, this, &new_thread));
     threads_.push_back(std::move(new_thread));
   }
   return Status::OK();
@@ -91,25 +79,26 @@ Status ImpalaServicePool::Init(int num_threads) {
 void ImpalaServicePool::Shutdown() {
   service_queue_.Shutdown();
 
-  MutexLock lock(shutdown_lock_);
+  lock_guard<mutex> lock(shutdown_lock_);
   if (closing_) return;
   closing_ = true;
-  // TODO: Use a proper thread pool implementation.
-  for (std::unique_ptr<impala::Thread>& thread : threads_) {
+  // TODO (from KRPC): Use a proper thread pool implementation.
+  for (std::unique_ptr<Thread>& thread : threads_) {
     thread->Join();
   }
 
   // Now we must drain the service queue.
-  Status status = Status::ServiceUnavailable("Service is shutting down");
-  std::unique_ptr<InboundCall> incoming;
+  kudu::Status status = kudu::Status::ServiceUnavailable("Service is shutting down");
+  std::unique_ptr<kudu::rpc::InboundCall> incoming;
   while (service_queue_.BlockingGet(&incoming)) {
-    incoming.release()->RespondFailure(ErrorStatusPB::FATAL_SERVER_SHUTTING_DOWN, status);
+    incoming.release()->RespondFailure(
+        kudu::rpc::ErrorStatusPB::FATAL_SERVER_SHUTTING_DOWN, status);
   }
 
   service_->Shutdown();
 }
 
-void ImpalaServicePool::RejectTooBusy(InboundCall* c) {
+void ImpalaServicePool::RejectTooBusy(kudu::rpc::InboundCall* c) {
   string err_msg =
       Substitute("$0 request on $1 from $2 dropped due to backpressure. "
                  "The service queue is full; it has $3 items.",
@@ -117,20 +106,21 @@ void ImpalaServicePool::RejectTooBusy(InboundCall* c) {
                  service_->service_name(),
                  c->remote_address().ToString(),
                  service_queue_.max_size());
-  rpcs_queue_overflow_->Increment();
-  KLOG_EVERY_N_SECS(WARNING, 1) << err_msg;
-  c->RespondFailure(ErrorStatusPB::ERROR_SERVER_TOO_BUSY,
-                    Status::ServiceUnavailable(err_msg));
-  DLOG(INFO) << err_msg << " Contents of service queue:\n"
-             << service_queue_.ToString();
+  rpcs_queue_overflow_.Add(1);
+  c->RespondFailure(kudu::rpc::ErrorStatusPB::ERROR_SERVER_TOO_BUSY,
+                    kudu::Status::ServiceUnavailable(err_msg));
+  VLOG(1) << err_msg << " Contents of service queue:\n"
+          << service_queue_.ToString();
 }
 
-RpcMethodInfo* ImpalaServicePool::LookupMethod(const RemoteMethod& method) {
+kudu::rpc::RpcMethodInfo* ImpalaServicePool::LookupMethod(
+    const kudu::rpc::RemoteMethod& method) {
   return service_->LookupMethod(method);
 }
 
-Status ImpalaServicePool::QueueInboundCall(gscoped_ptr<InboundCall> call) {
-  InboundCall* c = call.release();
+kudu::Status ImpalaServicePool::QueueInboundCall(
+    gscoped_ptr<kudu::rpc::InboundCall> call) {
+  kudu::rpc::InboundCall* c = call.release();
 
   vector<uint32_t> unsupported_features;
   for (uint32_t feature : c->GetRequiredFeatures()) {
@@ -141,7 +131,7 @@ Status ImpalaServicePool::QueueInboundCall(gscoped_ptr<InboundCall> call) {
 
   if (!unsupported_features.empty()) {
     c->RespondUnsupportedFeature(unsupported_features);
-    return Status::NotSupported("call requires unsupported application feature flags",
+    return kudu::Status::NotSupported("call requires unsupported application feature flags",
                                 JoinMapped(unsupported_features,
                                            [] (uint32_t flag) { return std::to_string(flag); },
                                            ", "));
@@ -150,55 +140,57 @@ Status ImpalaServicePool::QueueInboundCall(gscoped_ptr<InboundCall> call) {
   TRACE_TO(c->trace(), "Inserting onto call queue");
 
   // Queue message on service queue
-  boost::optional<InboundCall*> evicted;
+  boost::optional<kudu::rpc::InboundCall*> evicted;
   auto queue_status = service_queue_.Put(c, &evicted);
-  if (queue_status == QUEUE_FULL) {
+  if (queue_status == kudu::rpc::QueueStatus::QUEUE_FULL) {
     RejectTooBusy(c);
-    return Status::OK();
+    return kudu::Status::OK();
   }
 
   if (PREDICT_FALSE(evicted != boost::none)) {
     RejectTooBusy(*evicted);
   }
 
-  if (PREDICT_TRUE(queue_status == QUEUE_SUCCESS)) {
+  if (PREDICT_TRUE(queue_status == kudu::rpc::QueueStatus::QUEUE_SUCCESS)) {
     // NB: do not do anything with 'c' after it is successfully queued --
     // a service thread may have already dequeued it, processed it, and
     // responded by this point, in which case the pointer would be invalid.
-    return Status::OK();
+    return kudu::Status::OK();
   }
 
-  Status status = Status::OK();
-  if (queue_status == QUEUE_SHUTDOWN) {
-    status = Status::ServiceUnavailable("Service is shutting down");
-    c->RespondFailure(ErrorStatusPB::FATAL_SERVER_SHUTTING_DOWN, status);
+  kudu::Status status = kudu::Status::OK();
+  if (queue_status == kudu::rpc::QueueStatus::QUEUE_SHUTDOWN) {
+    status = kudu::Status::ServiceUnavailable("Service is shutting down");
+    c->RespondFailure(kudu::rpc::ErrorStatusPB::FATAL_SERVER_SHUTTING_DOWN, status);
   } else {
-    status = Status::RuntimeError(Substitute("Unknown error from BlockingQueue: $0", queue_status));
-    c->RespondFailure(ErrorStatusPB::FATAL_UNKNOWN, status);
+    status = kudu::Status::RuntimeError(
+        Substitute("Unknown error from BlockingQueue: $0", queue_status));
+    c->RespondFailure(kudu::rpc::ErrorStatusPB::FATAL_UNKNOWN, status);
   }
   return status;
 }
 
 void ImpalaServicePool::RunThread() {
   while (true) {
-    std::unique_ptr<InboundCall> incoming;
+    std::unique_ptr<kudu::rpc::InboundCall> incoming;
     if (!service_queue_.BlockingGet(&incoming)) {
       VLOG(1) << "ImpalaServicePool: messenger shutting down.";
       return;
     }
 
-    incoming->RecordHandlingStarted(incoming_queue_time_);
+    // We need to call RecordHandlingStarted() to update some internal InboundCall state.
+    incoming->RecordHandlingStarted(unused_histogram_);
     ADOPT_TRACE(incoming->trace());
 
     if (PREDICT_FALSE(incoming->ClientTimedOut())) {
       TRACE_TO(incoming->trace(), "Skipping call since client already timed out");
-      rpcs_timed_out_in_queue_->Increment();
+      rpcs_timed_out_in_queue_.Add(1);
 
       // Respond as a failure, even though the client will probably ignore
       // the response anyway.
       incoming->RespondFailure(
-        ErrorStatusPB::ERROR_SERVER_TOO_BUSY,
-        Status::TimedOut("Call waited in the queue past client deadline"));
+        kudu::rpc::ErrorStatusPB::ERROR_SERVER_TOO_BUSY,
+        kudu::Status::TimedOut("Call waited in the queue past client deadline"));
 
       // Must release since RespondFailure above ends up taking ownership
       // of the object.
@@ -214,9 +206,24 @@ void ImpalaServicePool::RunThread() {
   }
 }
 
+void ImpalaServicePool::ToJson(rapidjson::Value* value, rapidjson::Document* document) {
+  int queue_size = service_queue_.estimated_queue_length();
+  int idle_threads = service_queue_.estimated_idle_worker_count();
+  value->AddMember("queue_size", queue_size, document->GetAllocator());
+  value->AddMember("idle_threads", idle_threads, document->GetAllocator());
+
+  rapidjson::Value name(service_name().c_str(), document->GetAllocator());
+  value->AddMember("service_name", name, document->GetAllocator());
+  value->AddMember(
+      "service_max_queue_size", service_queue_.max_size(), document->GetAllocator());
+  value->AddMember("rpcs_timed_out_in_queue", rpcs_timed_out_in_queue_.Load(),
+      document->GetAllocator());
+  value->AddMember("rpcs_queue_overflow", rpcs_queue_overflow_.Load(),
+      document->GetAllocator());
+}
+
 const string ImpalaServicePool::service_name() const {
   return service_->service_name();
 }
 
-} // namespace rpc
-} // namespace kudu
+} // namespace impala

@@ -34,7 +34,6 @@ using kudu::rpc::Messenger;
 using kudu::rpc::AcceptorPool;
 using kudu::rpc::RpcController;
 using kudu::rpc::ServiceIf;
-using kudu::rpc::ServicePool;
 using kudu::Sockaddr;
 using kudu::HostPort;
 using kudu::MetricEntity;
@@ -48,6 +47,8 @@ DEFINE_int32(num_reactor_threads, 0,
     "default value 0, it will be set to number of CPU cores.");
 DEFINE_int32(rpc_retry_interval_ms, 5,
     "Time in millisecond of waiting before retrying an RPC when remote is busy");
+
+using namespace rapidjson;
 
 namespace impala {
 
@@ -66,16 +67,16 @@ Status RpcMgr::RegisterService(int32_t num_service_threads, int32_t service_queu
     unique_ptr<ServiceIf> service_ptr) {
   DCHECK(is_inited()) << "Must call Init() before RegisterService()";
   DCHECK(!services_started_) << "Cannot call RegisterService() after StartServices()";
-  scoped_refptr<ServicePool> service_pool =
-      new ServicePool(gscoped_ptr<ServiceIf>(service_ptr.release()),
+  scoped_refptr<ImpalaServicePool> service_pool =
+      new ImpalaServicePool(std::move(service_ptr),
           messenger_->metric_entity(), service_queue_depth);
   // Start the thread pool first before registering the service in case the startup fails.
-  KUDU_RETURN_IF_ERROR(
-      service_pool->Init(num_service_threads), "Service pool failed to start");
+  RETURN_IF_ERROR(
+      service_pool->Init(num_service_threads));
   KUDU_RETURN_IF_ERROR(
       messenger_->RegisterService(service_pool->service_name(), service_pool),
       "Could not register service");
-  service_pools_.push_back(service_pool);
+  service_pools_.push_back(std::move(service_pool));
 
   return Status::OK();
 }
@@ -114,6 +115,16 @@ bool RpcMgr::IsServerTooBusy(const RpcController& rpc_controller) {
   const kudu::rpc::ErrorStatusPB* err = rpc_controller.error_response();
   return status.IsRemoteError() && err != nullptr && err->has_code() &&
       err->code() == kudu::rpc::ErrorStatusPB::ERROR_SERVER_TOO_BUSY;
+}
+
+void RpcMgr::ToJson(Document* document) {
+  Value services(kArrayType);
+  for (auto service_pool : service_pools_) {
+    Value service_entry(kObjectType);
+    service_pool->ToJson(&service_entry, document);
+    services.PushBack(service_entry, document->GetAllocator());
+  }
+  document->AddMember("services", services, document->GetAllocator());
 }
 
 } // namespace impala
