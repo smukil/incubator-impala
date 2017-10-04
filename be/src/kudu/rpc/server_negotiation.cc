@@ -81,6 +81,8 @@ DEFINE_string_hidden(trusted_subnets,
 TAG_FLAG(trusted_subnets, advanced);
 TAG_FLAG(trusted_subnets, evolving);
 
+DEFINE_bool(set_kudu_sasl_callback, false, "Sets sasl connection specific callback in Kudu");
+
 static bool ValidateTrustedSubnets(const char* /*flagname*/, const string& value) {
   if (value.empty()) {
     return true;
@@ -143,9 +145,10 @@ ServerNegotiation::ServerNegotiation(unique_ptr<Socket> socket,
   callbacks_.push_back(SaslBuildCallback(SASL_CB_SERVER_USERDB_CHECKPASS,
       reinterpret_cast<int (*)()>(&ServerNegotiationPlainAuthCb), this));
 
-  if (!FLAGS_keytab_file.empty()) {
+  if (!FLAGS_keytab_file.empty() && FLAGS_set_kudu_sasl_callback) {
     callbacks_.push_back(SaslBuildCallback(SASL_CB_PROXY_POLICY,
         reinterpret_cast<int (*)()>(&impala::ImpalaSaslAuthorizeInternal), nullptr));
+    LOG (INFO) << "SETTING CALLBACK!";
   }
   callbacks_.push_back(SaslBuildCallback(SASL_CB_LIST_END, nullptr, nullptr));
 }
