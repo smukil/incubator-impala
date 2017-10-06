@@ -65,10 +65,10 @@ class QueryExecMgr {
 
  private:
   /// protects qs_map_
-  boost::mutex qs_map_lock_;
+  boost::mutex qs_map_lock_[4];
 
   /// map from query id to QueryState (owned by us)
-  std::unordered_map<TUniqueId, QueryState*> qs_map_;
+  std::unordered_map<TUniqueId, QueryState*> qs_map_[4];
 
   /// Gets the existing QueryState or creates a new one if not present.
   /// 'created' is set to true if it was created, false otherwise.

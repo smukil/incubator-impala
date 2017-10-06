@@ -81,9 +81,10 @@ QueryState* QueryExecMgr::GetQueryState(const TUniqueId& query_id) {
   QueryState* qs = nullptr;
   int refcnt;
   {
-    lock_guard<mutex> l(qs_map_lock_);
-    auto it = qs_map_.find(query_id);
-    if (it == qs_map_.end()) return nullptr;
+    uint8_t qs_map_bucket = QueryIdToBucket(query_id);
+    lock_guard<mutex> l(qs_map_lock_[qs_map_bucket]);
+    auto it = qs_map_[qs_map_bucket].find(query_id);
+    if (it == qs_map_[qs_map_bucket].end()) return nullptr;
     qs = it->second;
     refcnt = qs->refcnt_.Add(1);
   }
@@ -97,12 +98,13 @@ QueryState* QueryExecMgr::GetOrCreateQueryState(
   QueryState* qs = nullptr;
   int refcnt;
   {
-    lock_guard<mutex> l(qs_map_lock_);
-    auto it = qs_map_.find(query_ctx.query_id);
-    if (it == qs_map_.end()) {
+    uint8_t qs_map_bucket = QueryIdToBucket(query_ctx.query_id);
+    lock_guard<mutex> l(qs_map_lock_[qs_map_bucket]);
+    auto it = qs_map_[qs_map_bucket].find(query_ctx.query_id);
+    if (it == qs_map_[qs_map_bucket].end()) {
       // register new QueryState
       qs = new QueryState(query_ctx);
-      qs_map_.insert(make_pair(query_ctx.query_id, qs));
+      qs_map_[qs_map_bucket].insert(make_pair(query_ctx.query_id, qs));
       *created = true;
     } else {
       qs = it->second;
@@ -152,18 +154,19 @@ void QueryExecMgr::ReleaseQueryState(QueryState* qs) {
 
   QueryState* qs_from_map = nullptr;
   {
+    uint8_t qs_map_bucket = QueryIdToBucket(query_id);
     // for now, gc right away
-    lock_guard<mutex> l(qs_map_lock_);
-    auto it = qs_map_.find(query_id);
+    lock_guard<mutex> l(qs_map_lock_[qs_map_bucket]);
+    auto it = qs_map_[qs_map_bucket].find(query_id);
     // someone else might have gc'd the entry
-    if (it == qs_map_.end()) return;
+    if (it == qs_map_[qs_map_bucket].end()) return;
     qs_from_map = it->second;
     DCHECK_EQ(qs_from_map->query_ctx().query_id, query_id);
     int32_t cnt = qs_from_map->refcnt_.Load();
     DCHECK_GE(cnt, 0);
     // someone else might have increased the refcnt in the meantime
     if (cnt > 0) return;
-    qs_map_.erase(it);
+    qs_map_[qs_map_bucket].erase(it);
   }
   // TODO: send final status report during gc, but do this from a different thread
   qs_from_map->ReleaseResources();

@@ -925,6 +925,7 @@ void ImpalaServer::PrepareQueryContext(TQueryCtx* query_ctx) {
   // single generator under a lock (since random_generator is not
   // thread-safe).
   query_ctx->query_id = UuidToQueryId(random_generator()());
+
 }
 
 Status ImpalaServer::RegisterQuery(shared_ptr<SessionState> session_state,
@@ -936,17 +937,19 @@ Status ImpalaServer::RegisterQuery(shared_ptr<SessionState> session_state,
   // The session may have been closed after it was checked out.
   if (session_state->closed) return Status("Session has been closed, ignoring query.");
   const TUniqueId& query_id = request_state->query_id();
+  uint8_t client_map_bucket = QueryIdToBucket(query_id);
   {
-    lock_guard<mutex> l(client_request_state_map_lock_);
-    ClientRequestStateMap::iterator entry = client_request_state_map_.find(query_id);
-    if (entry != client_request_state_map_.end()) {
+    lock_guard<mutex> l(client_request_state_map_lock_[client_map_bucket]);
+    ClientRequestStateMap::iterator entry =
+        client_request_state_map_[client_map_bucket].find(query_id);
+    if (entry != client_request_state_map_[client_map_bucket].end()) {
       // There shouldn't be an active query with that same id.
       // (query_id is globally unique)
       stringstream ss;
       ss << "query id " << PrintId(query_id) << " already exists";
       return Status(ErrorMsg(TErrorCode::INTERNAL_ERROR, ss.str()));
     }
-    client_request_state_map_.insert(make_pair(query_id, request_state));
+    client_request_state_map_[client_map_bucket].insert(make_pair(query_id, request_state));
   }
   return Status::OK();
 }
@@ -990,15 +993,17 @@ Status ImpalaServer::UnregisterQuery(const TUniqueId& query_id, bool check_infli
   RETURN_IF_ERROR(CancelInternal(query_id, check_inflight, cause));
 
   shared_ptr<ClientRequestState> request_state;
+  uint8_t client_map_bucket = QueryIdToBucket(query_id);
   {
-    lock_guard<mutex> l(client_request_state_map_lock_);
-    ClientRequestStateMap::iterator entry = client_request_state_map_.find(query_id);
-    if (entry == client_request_state_map_.end()) {
+    lock_guard<mutex> l(client_request_state_map_lock_[client_map_bucket]);
+    ClientRequestStateMap::iterator entry =
+        client_request_state_map_[client_map_bucket].find(query_id);
+    if (entry == client_request_state_map_[client_map_bucket].end()) {
       return Status("Invalid or unknown query handle");
     } else {
       request_state = entry->second;
     }
-    client_request_state_map_.erase(entry);
+    client_request_state_map_[client_map_bucket].erase(entry);
   }
 
   request_state->Done();
@@ -2064,9 +2069,11 @@ void ImpalaServer::Join() {
 
 shared_ptr<ClientRequestState> ImpalaServer::GetClientRequestState(
     const TUniqueId& query_id) {
-  lock_guard<mutex> l(client_request_state_map_lock_);
-  ClientRequestStateMap::iterator i = client_request_state_map_.find(query_id);
-  if (i == client_request_state_map_.end()) {
+  uint8_t client_map_bucket = QueryIdToBucket(query_id);
+  lock_guard<mutex> l(client_request_state_map_lock_[client_map_bucket]);
+  ClientRequestStateMap::iterator i =
+      client_request_state_map_[client_map_bucket].find(query_id);
+  if (i == client_request_state_map_[client_map_bucket].end()) {
     return shared_ptr<ClientRequestState>();
   } else {
     return i->second;
