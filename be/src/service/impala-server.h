@@ -803,11 +803,11 @@ class ImpalaServer : public ImpalaServiceIf,
   /// as a shared_ptr to allow asynchronous deletion
   typedef boost::unordered_map<TUniqueId, std::shared_ptr<ClientRequestState>>
       ClientRequestStateMap;
-  ClientRequestStateMap client_request_state_map_;
+  ClientRequestStateMap client_request_state_map_[4];
 
   /// Protects client_request_state_map_. See "Locking" in the class comment for lock
   /// acquisition order.
-  boost::mutex client_request_state_map_lock_;
+  boost::mutex client_request_state_map_lock_[4];
 
   /// Default query options in the form of TQueryOptions and beeswax::ConfigVariable
   TQueryOptions default_query_options_;

@@ -68,6 +68,12 @@ inline TUniqueId UuidToQueryId(const boost::uuids::uuid& uuid) {
   return result;
 }
 
+inline uint8_t QueryIdToBucket(const TUniqueId& query_id) {
+  uint8_t bucket = static_cast<uint64>(query_id.hi) % 4;
+  DCHECK(bucket < 4 && bucket >= 0);
+  return bucket;
+}
+
 inline TUniqueId GetQueryId(const TUniqueId& fragment_instance_id) {
   TUniqueId result = fragment_instance_id;
   result.lo &= ~FRAGMENT_IDX_MASK;  // zero out bottom 4 bytes
