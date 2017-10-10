@@ -47,6 +47,8 @@ class RpcContext;
 namespace impala {
 
 class DescriptorTbl;
+class DumpRecvrRequestPB;
+class DumpRecvrResponsePB;
 class EndDataStreamRequestPB;
 class EndDataStreamResponsePB;
 class KrpcDataStreamRecvr;
@@ -274,6 +276,10 @@ class KrpcDataStreamMgr : public DataStreamMgrBase {
   /// Closes all receivers registered for fragment_instance_id immediately.
   void Cancel(const TUniqueId& fragment_instance_id);
 
+  /// XXX
+  void DumpRecvr(const TUniqueId& finst_id, const DumpRecvrRequestPB* request,
+      DumpRecvrResponsePB* response, kudu::rpc::RpcContext* context);
+
   /// Waits for maintenance thread and sender response thread pool to finish.
   ~KrpcDataStreamMgr();
 
@@ -419,6 +425,10 @@ class KrpcDataStreamMgr : public DataStreamMgrBase {
   /// show up. 'ctx' is the encapsulated RPC request context (e.g. TransmitDataCtx).
   template<typename ContextType, typename RequestPBType>
   void HandleTimedOutSenders(const std::unique_ptr<ContextType>& ctx);
+
+  /// XXX
+  template<typename ContextType, typename RequestPBType>
+  void DumpEarlySenders(const std::unique_ptr<ContextType>& ctx, bool closed);
 
   /// Notifies any sender that has been waiting for its receiver for more than
   /// FLAGS_datastream_sender_timeout_ms.

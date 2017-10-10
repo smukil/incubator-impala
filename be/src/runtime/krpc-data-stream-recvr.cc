@@ -81,6 +81,9 @@ class KrpcDataStreamRecvr::SenderQueue {
   // incoming batches will be dropped.
   void Cancel();
 
+  // XXX
+  void DumpDetails(const TUniqueId& finst_id, PlanNodeId dest_node_id);
+
   // Must be called once to cleanup any queued resources.
   void Close();
 
@@ -130,6 +133,15 @@ class KrpcDataStreamRecvr::SenderQueue {
 KrpcDataStreamRecvr::SenderQueue::SenderQueue(
     KrpcDataStreamRecvr* parent_recvr, int num_senders)
   : recvr_(parent_recvr), num_remaining_senders_(num_senders) { }
+
+void KrpcDataStreamRecvr::SenderQueue::DumpDetails(const TUniqueId& finst_id,
+    PlanNodeId dest_node_id) {
+  VLOG_QUERY << "XXX: recvr details: fragment_instance_id_=" << finst_id
+             << " dest_node_id=" << dest_node_id
+             << " batch_queue_ size=" << batch_queue_.size()
+             << " blocked_senders_ size=" << blocked_senders_.size()
+             << " num_remaining_senders_=" << num_remaining_senders_;
+}
 
 Status KrpcDataStreamRecvr::SenderQueue::GetBatch(RowBatch** next_batch) {
   SCOPED_TIMER(recvr_->queue_get_batch_time_);
@@ -191,10 +203,12 @@ Status KrpcDataStreamRecvr::SenderQueue::GetBatch(RowBatch** next_batch) {
 void KrpcDataStreamRecvr::SenderQueue::AddBatch(const ProtoRowBatch& proto_batch,
     const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
     RpcContext* context) {
-  lock_guard<SpinLock> closing_lock(closing_lock_);
 
+  SCOPED_TIMER(recvr_->add_batch_timer_);
+  lock_guard<SpinLock> closing_lock(closing_lock_);
   int64_t batch_size = RowBatch::GetDeserializedSize(proto_batch);
   {
+    SCOPED_TIMER(recvr_->early_check_timer_);
     unique_lock<SpinLock> l(lock_);
     DCHECK_GT(num_remaining_senders_, 0);
     if (UNLIKELY(is_cancelled_)) {
@@ -237,6 +251,7 @@ void KrpcDataStreamRecvr::SenderQueue::AddBatch(const ProtoRowBatch& proto_batch
   }
 
   {
+    SCOPED_TIMER(recvr_->enqueue_timer_);
     lock_guard<SpinLock> l(lock_);
     VLOG_ROW << "added #rows=" << batch->num_rows() << " batch_size=" << batch_size;
     batch_queue_.push_back(make_pair(batch_size, batch));
@@ -257,6 +272,7 @@ void KrpcDataStreamRecvr::SenderQueue::DecrementSenders() {
             << " node_id=" << recvr_->dest_node_id()
             << " #senders=" << num_remaining_senders_;
   if (num_remaining_senders_ == 0) data_arrival_cv_.notify_one();
+  COUNTER_ADD(recvr_->num_closed_senders_, 1);
 }
 
 void KrpcDataStreamRecvr::SenderQueue::Cancel() {
@@ -355,6 +371,19 @@ KrpcDataStreamRecvr::KrpcDataStreamRecvr(KrpcDataStreamMgr* stream_mgr,
       recvr_side_profile_, "BytesReceived", bytes_received_counter_);
   deserialize_row_batch_timer_ =
       ADD_TIMER(sender_side_profile_, "DeserializeRowBatchTimer");
+
+  // XXX
+  add_batch_timer_ =
+      ADD_TIMER(sender_side_profile_, "AddBatchTimer");
+  early_check_timer_ =
+      ADD_TIMER(sender_side_profile_, "EarlyCheckTimer");
+  enqueue_timer_ =
+      ADD_TIMER(sender_side_profile_, "EnqueueTimer");
+  num_early_senders_ =
+      ADD_COUNTER(sender_side_profile_, "NumEarlySenders", TUnit::UNIT);
+  num_closed_senders_ =
+      ADD_COUNTER(sender_side_profile_, "NumClosedSenders", TUnit::UNIT);
+
   inactive_timer_ = profile_->inactive_timer();
   queue_get_batch_time_ = ADD_TIMER(recvr_side_profile_, "TotalGetBatchTime");
   data_arrival_timer_ =
@@ -407,6 +436,11 @@ Status KrpcDataStreamRecvr::GetBatch(RowBatch** next_batch) {
   DCHECK(!is_merging_);
   DCHECK_EQ(sender_queues_.size(), 1);
   return sender_queues_[0]->GetBatch(next_batch);
+}
+
+void KrpcDataStreamRecvr::DumpDetails(int sender_id) {
+  int use_sender_id = is_merging_ ? sender_id : 0;
+  sender_queues_[use_sender_id]->DumpDetails(fragment_instance_id_, dest_node_id_);
 }
 
 } // namespace impala

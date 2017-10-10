@@ -80,4 +80,15 @@ void DataStreamService::TransmitData(const TransmitDataRequestPB* request,
   }
 }
 
+void DataStreamService::DumpRecvr(const DumpRecvrRequestPB* request,
+    DumpRecvrResponsePB* response, RpcContext* context) {
+  TUniqueId finst_id;
+  finst_id.__set_lo(request->dest_fragment_instance_id().lo());
+  finst_id.__set_hi(request->dest_fragment_instance_id().hi());
+
+  ExecEnv::GetInstance()->KrpcStreamMgr()->DumpRecvr(finst_id, request,
+      response, context);
+  context->RespondSuccess();
+}
+
 }

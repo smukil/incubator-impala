@@ -50,6 +50,20 @@ message EndDataStreamResponsePB {
   optional StatusPB status = 1;
 }
 
+// XXX
+message DumpRecvrRequestPB {
+  optional UniqueIdPB dest_fragment_instance_id = 1;
+
+  // Id of this fragment in its role as a sender.
+  optional int32 sender_id = 2;
+
+  optional int32 dest_node_id = 3;
+}
+
+// XXX
+message DumpRecvrResponsePB {
+}
+
 // Handles data transmission between fragment instances.
 service DataStreamService {
   // Called by sender to transmit single row batch. Returns error indication
@@ -59,4 +73,7 @@ service DataStreamService {
 
   // Called by a sender to close the channel between fragment instances.
   rpc EndDataStream(EndDataStreamRequestPB) returns (EndDataStreamResponsePB);
+
+  // XXX
+  rpc DumpRecvr(DumpRecvrRequestPB) returns (DumpRecvrResponsePB);
 }

@@ -112,12 +112,14 @@ shared_ptr<DataStreamRecvrBase> KrpcDataStreamMgr::CreateRecvr(
   for (unique_ptr<TransmitDataCtx>& ctx : early_senders.waiting_sender_ctxs) {
      EnqueueRowBatch({recvr->fragment_instance_id(), move(ctx)});
      num_senders_waiting_->Increment(-1);
+     COUNTER_ADD(recvr->num_early_senders_, 1);
   }
   for (unique_ptr<EndDataStreamCtx>& ctx : early_senders.closed_sender_ctxs) {
      recvr->RemoveSender(ctx->request->sender_id());
      Status::OK().ToProto(ctx->response->mutable_status());
      ctx->context->RespondSuccess();
      num_senders_waiting_->Increment(-1);
+     COUNTER_ADD(recvr->num_early_senders_, 1);
   }
   return recvr;
 }
@@ -362,6 +364,55 @@ void KrpcDataStreamMgr::Maintenance() {
     // Wait for 10s
     shutdown_promise_.Get(10000, &timed_out);
     if (!timed_out) return;
+  }
+}
+
+template<typename ContextType, typename RequestPBType>
+void KrpcDataStreamMgr::DumpEarlySenders(const std::unique_ptr<ContextType>& ctx, bool closed) {
+   const RequestPBType* request = ctx->request;
+   TUniqueId finst_id;
+   finst_id.__set_lo(request->dest_fragment_instance_id().lo());
+   finst_id.__set_hi(request->dest_fragment_instance_id().hi());
+   VLOG_QUERY << "XXX: EarlySender: closed=" << closed
+              << " fragment_instance_id_=" << finst_id
+              << " dest_id_=" << request->dest_node_id()
+              << " sender_id_=" << request->sender_id();
+}
+
+void KrpcDataStreamMgr::DumpRecvr(const TUniqueId& finst_id,
+    const DumpRecvrRequestPB* request, DumpRecvrResponsePB* response,
+    kudu::rpc::RpcContext* context) {
+
+  bool already_unregistered = false;
+  lock_guard<mutex> l(lock_);
+  shared_ptr<KrpcDataStreamRecvr> recvr =
+      FindRecvr(finst_id, request->dest_node_id(), &already_unregistered);
+
+  if (recvr != nullptr) {
+    VLOG_QUERY << "XXX: recvr found "
+               << " fragment_instance_id_=" << finst_id
+               << " dest_id_=" << request->dest_node_id()
+               << " sender_id_=" << request->sender_id()
+               << " unregistered=" << already_unregistered;
+    recvr->DumpDetails(request->sender_id());
+  } else {
+    VLOG_QUERY << "XXX: recvr not found "
+               << " fragment_instance_id_=" << finst_id
+               << " dest_id_=" << request->dest_node_id()
+               << " sender_id_=" << request->sender_id()
+               << " unregistered=" << already_unregistered;
+  }
+
+  auto it = early_senders_map_.begin();
+  while (it != early_senders_map_.end()) {
+    const EarlySendersList& senders_list = it->second;
+    for (const auto& ctx : senders_list.waiting_sender_ctxs) {
+      DumpEarlySenders<TransmitDataCtx, TransmitDataRequestPB>(ctx, false);
+    }
+    for (const auto& ctx : senders_list.closed_sender_ctxs) {
+      DumpEarlySenders<EndDataStreamCtx, EndDataStreamRequestPB>(ctx, true);
+    }
+    ++it;
   }
 }
 

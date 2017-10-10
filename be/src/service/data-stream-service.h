@@ -48,6 +48,10 @@ class DataStreamService : public DataStreamServiceIf {
   /// The receiver replies to the client with a status serialized in 'response'.
   virtual void TransmitData(const TransmitDataRequestPB* request,
       TransmitDataResponsePB* response, kudu::rpc::RpcContext* context);
+
+  /// XXX
+  void DumpRecvr(const DumpRecvrRequestPB* request, DumpRecvrResponsePB* response,
+      kudu::rpc::RpcContext* context);
 };
 
 } // namespace impala

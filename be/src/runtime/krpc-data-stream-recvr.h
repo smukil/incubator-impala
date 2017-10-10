@@ -131,6 +131,9 @@ class KrpcDataStreamRecvr : public DataStreamRecvrBase {
     return num_buffered_bytes_.Load() + batch_size > total_buffer_limit_;
   }
 
+  /// XXX
+  void DumpDetails(int sender_id);
+
   /// KrpcDataStreamMgr instance used to create this recvr. (Not owned)
   KrpcDataStreamMgr* mgr_;
 
@@ -183,6 +186,13 @@ class KrpcDataStreamRecvr : public DataStreamRecvrBase {
   RuntimeProfile::TimeSeriesCounter* bytes_received_time_series_counter_;
 
   RuntimeProfile::Counter* deserialize_row_batch_timer_;
+
+  /// XXX
+  RuntimeProfile::Counter* add_batch_timer_;
+  RuntimeProfile::Counter* early_check_timer_;
+  RuntimeProfile::Counter* enqueue_timer_;
+  RuntimeProfile::Counter* num_early_senders_;
+  RuntimeProfile::Counter* num_closed_senders_;
 
   /// Time spent waiting until the first batch arrives across all queues.
   /// TODO: Turn this into a wall-clock timer.

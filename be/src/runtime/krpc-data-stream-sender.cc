@@ -61,6 +61,8 @@ using kudu::MonoDelta;
 
 DECLARE_int32(rpc_retry_interval_ms);
 
+DEFINE_int32(krpc_stuck_timeout_ms, 60 * 60 * 1000, "XXX");
+
 namespace impala {
 
 // A datastream sender may send row batches to multiple destinations. There is one
@@ -236,6 +238,9 @@ class KrpcDataStreamSender::Channel : public CacheLineAligned {
   // the preceding RPC fails. Returns OK otherwise.
   Status WaitForRpc(std::unique_lock<SpinLock>* lock) WARN_UNUSED_RESULT;
 
+  /// XXX
+  Status DumpRemoteStatus();
+
   // A callback function called from KRPC reactor thread to retry an RPC which failed
   // previously due to remote server being too busy. This will re-arm the request
   // parameters of the RPC. The retry may not happen if the callback has been aborted
@@ -297,6 +302,9 @@ Status KrpcDataStreamSender::Channel::Init(RuntimeState* state) {
 
   // Initialize some constant fields in the request protobuf.
   req_.Clear();
+  resp_.Clear();
+  eos_req_.Clear();
+  eos_resp_.Clear();
   UniqueIdPB* finstance_id_pb = req_.mutable_dest_fragment_instance_id();
   finstance_id_pb->set_lo(fragment_instance_id_.lo);
   finstance_id_pb->set_hi(fragment_instance_id_.hi);
@@ -312,17 +320,53 @@ void KrpcDataStreamSender::Channel::MarkDone(const Status& status) {
   rpc_done_cv_.notify_one();
 }
 
+Status KrpcDataStreamSender::Channel::DumpRemoteStatus() {
+  // Create a DataStreamService proxy to the destination.
+  RpcMgr* rpc_mgr = ExecEnv::GetInstance()->rpc_mgr();
+  std::unique_ptr<DataStreamServiceProxy> proxy;
+  RETURN_IF_ERROR(rpc_mgr->GetProxy(address_, &proxy));
+
+  RpcController rpc_controller;
+  DumpRecvrRequestPB req;
+  DumpRecvrResponsePB resp;
+
+  UniqueIdPB* finstance_id_pb = req.mutable_dest_fragment_instance_id();
+  finstance_id_pb->set_lo(fragment_instance_id_.lo);
+  finstance_id_pb->set_hi(fragment_instance_id_.hi);
+  req.set_sender_id(parent_->sender_id_);
+  req.set_dest_node_id(dest_node_id_);
+  KUDU_RETURN_IF_ERROR(proxy->DumpRecvr(req, &resp, &rpc_controller), "XXX");
+  return Status::OK();
+}
+
+#define TIMEOUT_PERIOD_COUNT   (FLAGS_krpc_stuck_timeout_ms / 50)
+
 Status KrpcDataStreamSender::Channel::WaitForRpc(std::unique_lock<SpinLock>* lock) {
   DCHECK(lock != nullptr);
   DCHECK(lock->owns_lock());
 
   SCOPED_TIMER(parent_->state_->total_network_send_timer());
 
+  int64_t count = 0;
   // Wait for in-flight RPCs to complete unless the parent sender is closed or cancelled.
   auto pred = [this]() -> bool { return !rpc_in_flight_ || ShouldTerminate(); };
   auto timeout = std::chrono::system_clock::now() + milliseconds(50);
   while (!rpc_done_cv_.wait_until(*lock, timeout, pred)) {
     timeout = system_clock::now() + milliseconds(50);
+    if ((++count % TIMEOUT_PERIOD_COUNT) == 0) {
+      // log the destination
+      LOG(WARNING) << "XXX: WaitForRPC() stuck for too long"
+                   << " address=" << address_
+                   << " fragment_instace_id_=" <<  fragment_instance_id_
+                   << " dest_node_id_=" << dest_node_id_
+                   << " sender_id_=" << parent_->sender_id_;
+      lock->unlock();
+      Status status = DumpRemoteStatus();
+      if (UNLIKELY(!status.ok())) {
+        VLOG_QUERY << "Failed to dump remote status";
+      }
+      lock->lock();
+    }
   }
   if (UNLIKELY(ShouldTerminate())) {
     // DSS is single-threaded so it's impossible for shutdown_ to be true here.
