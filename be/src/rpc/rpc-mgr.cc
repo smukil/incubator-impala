@@ -22,6 +22,7 @@
 #include "kudu/rpc/rpc_controller.h"
 #include "kudu/rpc/service_if.h"
 #include "kudu/util/net/net_util.h"
+#include "util/auth-util.h"
 #include "util/cpu-info.h"
 #include "util/network-util.h"
 
@@ -38,6 +39,7 @@ using kudu::HostPort;
 using kudu::MetricEntity;
 
 DECLARE_string(hostname);
+DECLARE_string(principal);
 
 DEFINE_int32(num_acceptor_threads, 2,
     "Number of threads dedicated to accepting connection requests for RPC services");
@@ -56,6 +58,16 @@ Status RpcMgr::Init() {
   int num_reactor_threads =
       FLAGS_num_reactor_threads > 0 ? FLAGS_num_reactor_threads : CpuInfo::num_cores();
   bld.set_num_reactors(num_reactor_threads).set_metric_entity(entity);
+
+  if (!FLAGS_principal.empty()) {
+    std::string internal_principal;
+    RETURN_IF_ERROR(GetInternalKerberosPrincipal(&internal_principal));
+
+    std::string service_name, unused_hostname, unused_realm;
+    RETURN_IF_ERROR(DissectKerberosPrincipal(internal_principal, &service_name, &unused_hostname,
+        &unused_realm));
+    bld.set_sasl_proto_name(service_name);
+  }
   KUDU_RETURN_IF_ERROR(bld.Build(&messenger_), "Could not build messenger");
   return Status::OK();
 }

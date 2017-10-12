@@ -17,11 +17,19 @@
 
 #include "service/client-request-state.h"
 #include "util/auth-util.h"
+#include "util/network-util.h"
 #include "gen-cpp/ImpalaInternalService_types.h"
 
 using namespace std;
+using boost::algorithm::is_any_of;
+
+DECLARE_string(principal);
+DECLARE_string(be_principal);
 
 namespace impala {
+
+// Pattern for hostname substitution.
+static const string HOSTNAME_PATTERN = "_HOST";
 
   const string& GetEffectiveUser(const TSessionState& session) {
     if (session.__isset.delegated_user && !session.delegated_user.empty()) {
@@ -42,5 +50,55 @@ namespace impala {
        << "execution summary.";
     return Status(ss.str());
   }
+
+// Replaces _HOST with the hostname if it occurs in the principal string.
+Status ReplacePrincipalHostFormat(std::string* out_principal) {
+  // Replace the string _HOST in principal with our hostname.
+  size_t off = out_principal->find(HOSTNAME_PATTERN);
+  if (off != string::npos) {
+    string hostname;
+    RETURN_IF_ERROR(GetHostname(&hostname));
+    out_principal->replace(off, HOSTNAME_PATTERN.size(), hostname);
+  }
+  return Status::OK();
+}
+
+Status GetExternalKerberosPrincipal(std::string* out_principal) {
+  *out_principal = std::string();
+  if (FLAGS_principal.empty()) return Status::OK();
+  *out_principal = FLAGS_principal;
+  RETURN_IF_ERROR(ReplacePrincipalHostFormat(out_principal));
+  return Status::OK();
+}
+
+Status GetInternalKerberosPrincipal(std::string* out_principal) {
+  *out_principal = std::string();
+  if (FLAGS_principal.empty()) return Status::OK();
+  if (FLAGS_be_principal.empty()) {
+    *out_principal = FLAGS_principal;
+    RETURN_IF_ERROR(ReplacePrincipalHostFormat(out_principal));
+  } else {
+    *out_principal = FLAGS_be_principal;
+    RETURN_IF_ERROR(ReplacePrincipalHostFormat(out_principal));
+  }
+  return Status::OK();
+}
+
+Status DissectKerberosPrincipal(const std::string& principal, std::string* service_name,
+    std::string* hostname, std::string* realm) {
+  vector<string> names;
+  split(names, principal, is_any_of("/@"));
+
+  if (names.size() != 3) {
+    return Status(strings::Substitute("Kerberos principal should be of the form: "
+        "<service>/<hostname>@<realm> - got: $0", principal));
+  }
+
+  *service_name = names[0];
+  *hostname = names[1];
+  *realm = names[2];
+
+  return Status::OK();
+}
 
 }

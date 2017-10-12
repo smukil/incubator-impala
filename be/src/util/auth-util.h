@@ -44,5 +44,15 @@ const std::string& GetEffectiveUser(const ImpalaServer::SessionState& session);
 Status CheckProfileAccess(const std::string& user, const std::string& effective_user,
     bool has_access);
 
+/// Returns the internal kerberos principal.
+Status GetInternalKerberosPrincipal(std::string* out_principal);
+
+/// Returns the external kerberos principal.
+Status GetExternalKerberosPrincipal(std::string* out_principal);
+
+/// Splits the kerberos principal which should be of the format:
+/// "<service>/<hostname>@<realm>", and fills in the respective out parameters.
+Status DissectKerberosPrincipal(const std::string& principal, std::string* service_name,
+    std::string* hostname, std::string* realm );
 } // namespace impala
 #endif

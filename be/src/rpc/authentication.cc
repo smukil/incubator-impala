@@ -42,6 +42,7 @@
 #include "rpc/auth-provider.h"
 #include "rpc/thrift-server.h"
 #include "transport/TSaslClientTransport.h"
+#include "util/auth-util.h"
 #include "util/debug-util.h"
 #include "util/error-util.h"
 #include "util/network-util.h"
@@ -126,9 +127,6 @@ static sasl_callback_t GENERAL_CALLBACKS[5];        // Applies to all connection
 static vector<sasl_callback_t> KERB_INT_CALLBACKS;  // Internal kerberos connections
 static vector<sasl_callback_t> KERB_EXT_CALLBACKS;  // External kerberos connections
 static vector<sasl_callback_t> LDAP_EXT_CALLBACKS;  // External LDAP connections
-
-// Pattern for hostname substitution.
-static const string HOSTNAME_PATTERN = "_HOST";
 
 // Constants for the two Sasl mechanisms we support
 static const string KERBEROS_MECHANISM = "GSSAPI";
@@ -654,6 +652,8 @@ Status InitAuth(const string& appname) {
       KUDU_RETURN_IF_ERROR(kudu::client::DisableSaslInitialization(),
           "Unable to disable Kudu SASL initialization.");
     }
+    KUDU_RETURN_IF_ERROR(kudu::rpc::DisableSaslInitialization(),
+        "Unable to disable Kudu RPC SASL initialization.");
 
     // Add our auxprop plugin, which gives us a hook before authentication
     int rc = sasl_auxprop_add_plugin(IMPALA_AUXPROP_PLUGIN.c_str(), &ImpalaAuxpropInit);
@@ -707,25 +707,8 @@ Status SaslAuthProvider::InitKerberos(const string& principal,
   // auth provider and we support kerberos.
   needs_kinit_ = is_internal_;
 
-  // Replace the string _HOST in principal with our hostname.
-  size_t off = principal_.find(HOSTNAME_PATTERN);
-  if (off != string::npos) {
-    string hostname;
-    RETURN_IF_ERROR(GetHostname(&hostname));
-    principal_.replace(off, HOSTNAME_PATTERN.size(), hostname);
-  }
-
-  vector<string> names;
-  split(names, principal_, is_any_of("/@"));
-
-  if (names.size() != 3) {
-    return Status(Substitute("Kerberos principal should be of the form: "
-        "<service>/<hostname>@<realm> - got: $0", principal_));
-  }
-
-  service_name_ = names[0];
-  hostname_ = names[1];
-  realm_ = names[2];
+  RETURN_IF_ERROR(DissectKerberosPrincipal(
+      principal_, &service_name_, &hostname_, &realm_));
 
   LOG(INFO) << "Using " << (is_internal_ ? "internal" : "external")
             << " kerberos principal \"" << service_name_ << "/"
@@ -1035,20 +1018,18 @@ Status AuthManager::Init() {
         "is used in internal (back-end) communication.");
   }
 
-  // When acting as a server on external connections:
-  string kerberos_external_principal;
   // When acting as a client, or as a server on internal connections:
   string kerberos_internal_principal;
+  // When acting as a server on external connections:
+  string kerberos_external_principal;
 
-  if (!FLAGS_principal.empty()) {
-    kerberos_external_principal = FLAGS_principal;
-    if (FLAGS_be_principal.empty()) {
-      kerberos_internal_principal = FLAGS_principal;
-    } else {
-      kerberos_internal_principal = FLAGS_be_principal;
-    }
+  RETURN_IF_ERROR(GetInternalKerberosPrincipal(&kerberos_internal_principal));
+  RETURN_IF_ERROR(GetExternalKerberosPrincipal(&kerberos_external_principal));
+
+  if (!kerberos_internal_principal.empty()) {
     RETURN_IF_ERROR(InitKerberosEnv());
   }
+
   // This is written from the perspective of the daemons - thus "internal"
   // means "I am used for communication with other daemons, both as a client
   // and as a server".  "External" means that "I am used when being a server
