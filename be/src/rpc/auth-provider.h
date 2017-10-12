@@ -24,6 +24,7 @@
 
 #include "common/status.h"
 #include "util/promise.h"
+#include "util/thread.h"
 
 namespace sasl { class TSasl; }
 

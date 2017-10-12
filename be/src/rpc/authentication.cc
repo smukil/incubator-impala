@@ -37,10 +37,12 @@
 #include <ldap.h>
 
 #include "exec/kudu-util.h"
+#include "kudu/rpc/sasl_common.h"
 #include "kudu/security/init.h"
 #include "rpc/auth-provider.h"
 #include "rpc/thrift-server.h"
 #include "transport/TSaslClientTransport.h"
+#include "util/auth-util.h"
 #include "util/debug-util.h"
 #include "util/error-util.h"
 #include "util/network-util.h"
@@ -132,9 +134,6 @@ static vector<sasl_callback_t> LDAP_EXT_CALLBACKS;  // External LDAP connections
 // Path to the file based credential cache that we pass to the KRB5CCNAME environment
 // variable.
 static const string KRB5CCNAME_PATH = "/tmp/krb5cc_impala_internal";
-
-// Pattern for hostname substitution.
-static const string HOSTNAME_PATTERN = "_HOST";
 
 // Constants for the two Sasl mechanisms we support
 static const string KERBEROS_MECHANISM = "GSSAPI";
@@ -562,36 +561,36 @@ void SaslSetMutex() {
 
 
 Status InitAuth(const string& appname) {
-  // We only set up Sasl things if we are indeed going to be using Sasl.
-  // Checking of these flags for sanity is done later, but this check is good
-  // enough at this early stage:
+  // Setup basic callbacks for Sasl. We initialize SASL always since KRPC expects it to
+  // be initialized.
+  // Good idea to have logging everywhere
+  GENERAL_CALLBACKS[0].id = SASL_CB_LOG;
+  GENERAL_CALLBACKS[0].proc = (int (*)())&SaslLogCallback;
+  GENERAL_CALLBACKS[0].context = ((void *)"General");
+
+  int arr_offset = 0;
+  if (!FLAGS_sasl_path.empty()) {
+    // Need this here so we can find available mechanisms
+    GENERAL_CALLBACKS[1].id = SASL_CB_GETPATH;
+    GENERAL_CALLBACKS[1].proc = (int (*)())&SaslGetPath;
+    GENERAL_CALLBACKS[1].context = NULL;
+    arr_offset = 1;
+  }
+
+  // Allows us to view and set some options
+  GENERAL_CALLBACKS[1 + arr_offset].id = SASL_CB_GETOPT;
+  GENERAL_CALLBACKS[1 + arr_offset].proc = (int (*)())&SaslGetOption;
+  GENERAL_CALLBACKS[1 + arr_offset].context = NULL;
+
+  // For curiosity, let's see what files are being touched.
+  GENERAL_CALLBACKS[2 + arr_offset].id = SASL_CB_VERIFYFILE;
+  GENERAL_CALLBACKS[2 + arr_offset].proc = (int (*)())&SaslVerifyFile;
+  GENERAL_CALLBACKS[2 + arr_offset].context = NULL;
+
+  GENERAL_CALLBACKS[3 + arr_offset].id = SASL_CB_LIST_END;
+
+  // Other than the general callbacks, we only setup other SASL things as required.
   if (FLAGS_enable_ldap_auth || !FLAGS_principal.empty()) {
-    // Good idea to have logging everywhere
-    GENERAL_CALLBACKS[0].id = SASL_CB_LOG;
-    GENERAL_CALLBACKS[0].proc = (int (*)())&SaslLogCallback;
-    GENERAL_CALLBACKS[0].context = ((void *)"General");
-
-    int arr_offset = 0;
-    if (!FLAGS_sasl_path.empty()) {
-      // Need this here so we can find available mechanisms
-      GENERAL_CALLBACKS[1].id = SASL_CB_GETPATH;
-      GENERAL_CALLBACKS[1].proc = (int (*)())&SaslGetPath;
-      GENERAL_CALLBACKS[1].context = NULL;
-      arr_offset = 1;
-    }
-
-    // Allows us to view and set some options
-    GENERAL_CALLBACKS[1 + arr_offset].id = SASL_CB_GETOPT;
-    GENERAL_CALLBACKS[1 + arr_offset].proc = (int (*)())&SaslGetOption;
-    GENERAL_CALLBACKS[1 + arr_offset].context = NULL;
-
-    // For curiosity, let's see what files are being touched.
-    GENERAL_CALLBACKS[2 + arr_offset].id = SASL_CB_VERIFYFILE;
-    GENERAL_CALLBACKS[2 + arr_offset].proc = (int (*)())&SaslVerifyFile;
-    GENERAL_CALLBACKS[2 + arr_offset].context = NULL;
-
-    GENERAL_CALLBACKS[3 + arr_offset].id = SASL_CB_LIST_END;
-
     if (!FLAGS_principal.empty()) {
       // Callbacks for when we're a Kerberos Sasl internal connection.  Just do logging.
       KERB_INT_CALLBACKS.resize(3);
@@ -641,16 +640,8 @@ Status InitAuth(const string& appname) {
       LDAP_EXT_CALLBACKS[3].id = SASL_CB_LIST_END;
     }
 
-    SaslSetMutex();
-    try {
-      // We assume all impala processes are both server and client.
-      sasl::TSaslServer::SaslInit(GENERAL_CALLBACKS, appname);
-      sasl::TSaslClient::SaslInit(GENERAL_CALLBACKS);
-    } catch (sasl::SaslServerImplException& e) {
-      stringstream err_msg;
-      err_msg << "Could not initialize Sasl library: " << e.what();
-      return Status(err_msg.str());
-    }
+    KUDU_RETURN_IF_ERROR(kudu::rpc::DisableSaslInitialization(),
+        "Unable to disable Kudu RPC SASL initialization.");
 
     // Kudu client shouldn't attempt to initialize SASL which would conflict with
     // Impala's SASL initialization. This must be called before any KuduClients are
@@ -660,13 +651,24 @@ Status InitAuth(const string& appname) {
       KUDU_RETURN_IF_ERROR(kudu::client::DisableSaslInitialization(),
           "Unable to disable Kudu SASL initialization.");
     }
+  }
 
-    // Add our auxprop plugin, which gives us a hook before authentication
-    int rc = sasl_auxprop_add_plugin(IMPALA_AUXPROP_PLUGIN.c_str(), &ImpalaAuxpropInit);
-    if (rc != SASL_OK) {
-      return Status(Substitute("Error adding Sasl auxprop plugin: $0",
-              sasl_errstring(rc, NULL, NULL)));
-    }
+  SaslSetMutex();
+  try {
+    // We assume all impala processes are both server and client.
+    sasl::TSaslServer::SaslInit(GENERAL_CALLBACKS, appname);
+    sasl::TSaslClient::SaslInit(GENERAL_CALLBACKS);
+  } catch (sasl::SaslServerImplException& e) {
+    stringstream err_msg;
+    err_msg << "Could not initialize Sasl library: " << e.what();
+    return Status(err_msg.str());
+  }
+
+  // Add our auxprop plugin, which gives us a hook before authentication
+  int rc = sasl_auxprop_add_plugin(IMPALA_AUXPROP_PLUGIN.c_str(), &ImpalaAuxpropInit);
+  if (rc != SASL_OK) {
+    return Status(Substitute("Error adding Sasl auxprop plugin: $0",
+            sasl_errstring(rc, NULL, NULL)));
   }
 
   // Initializes OpenSSL.
@@ -713,25 +715,8 @@ Status SaslAuthProvider::InitKerberos(const string& principal,
   // auth provider and we support kerberos.
   needs_kinit_ = is_internal_;
 
-  // Replace the string _HOST in principal with our hostname.
-  size_t off = principal_.find(HOSTNAME_PATTERN);
-  if (off != string::npos) {
-    string hostname;
-    RETURN_IF_ERROR(GetHostname(&hostname));
-    principal_.replace(off, HOSTNAME_PATTERN.size(), hostname);
-  }
-
-  vector<string> names;
-  split(names, principal_, is_any_of("/@"));
-
-  if (names.size() != 3) {
-    return Status(Substitute("Kerberos principal should be of the form: "
-        "<service>/<hostname>@<realm> - got: $0", principal_));
-  }
-
-  service_name_ = names[0];
-  hostname_ = names[1];
-  realm_ = names[2];
+  RETURN_IF_ERROR(DissectKerberosPrincipal(
+      principal_, &service_name_, &hostname_, &realm_));
 
   LOG(INFO) << "Using " << (is_internal_ ? "internal" : "external")
             << " kerberos principal \"" << service_name_ << "/"
@@ -1041,20 +1026,18 @@ Status AuthManager::Init() {
         "is used in internal (back-end) communication.");
   }
 
-  // When acting as a server on external connections:
-  string kerberos_external_principal;
   // When acting as a client, or as a server on internal connections:
   string kerberos_internal_principal;
+  // When acting as a server on external connections:
+  string kerberos_external_principal;
 
-  if (!FLAGS_principal.empty()) {
-    kerberos_external_principal = FLAGS_principal;
-    if (FLAGS_be_principal.empty()) {
-      kerberos_internal_principal = FLAGS_principal;
-    } else {
-      kerberos_internal_principal = FLAGS_be_principal;
-    }
+  RETURN_IF_ERROR(GetInternalKerberosPrincipal(&kerberos_internal_principal));
+  RETURN_IF_ERROR(GetExternalKerberosPrincipal(&kerberos_external_principal));
+
+  if (!kerberos_internal_principal.empty()) {
     RETURN_IF_ERROR(InitKerberosEnv());
   }
+
   // This is written from the perspective of the daemons - thus "internal"
   // means "I am used for communication with other daemons, both as a client
   // and as a server".  "External" means that "I am used when being a server
