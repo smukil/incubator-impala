@@ -56,6 +56,8 @@
 #include "kudu/util/threadpool.h"
 #include "kudu/util/trace.h"
 
+#include "util/stopwatch.h"
+
 // When compiling on Mac OS X, use 'kqueue' instead of the default, 'select', for the event loop.
 // Otherwise we run into problems because 'select' can't handle connections when more than 1024
 // file descriptors are open by the process.
@@ -736,6 +738,10 @@ class AssignOutboundCallTask : public ReactorTask {
       : call_(std::move(call)) {}
 
   void Run(ReactorThread* reactor) override {
+    StopQueueTimeSw();
+    uint64_t time_spent_in_queue = QueueTotalElapsedTime();
+    call_->SetTempTimerTotalTime(time_spent_in_queue);
+    call_->StartTempTimer();
     reactor->AssignOutboundCall(call_);
     delete this;
   }
@@ -747,7 +753,12 @@ class AssignOutboundCallTask : public ReactorTask {
     delete this;
   }
 
+  void StartQueueTimeSw() { time_spent_in_queue_sw_.Start(); }
+  void StopQueueTimeSw() { time_spent_in_queue_sw_.Stop(); }
+  uint64_t QueueTotalElapsedTime() { return time_spent_in_queue_sw_.TotalElapsedTime(); }
+
  private:
+  impala::MonotonicStopWatch time_spent_in_queue_sw_;
   shared_ptr<OutboundCall> call_;
 };
 
@@ -758,7 +769,9 @@ void Reactor::QueueOutboundCall(const shared_ptr<OutboundCall>& call) {
   if (PREDICT_FALSE(call->ShouldInjectCancellation())) {
     QueueCancellation(call);
   }
-  ScheduleReactorTask(new AssignOutboundCallTask(call));
+  AssignOutboundCallTask* outbound_task = new AssignOutboundCallTask(call);
+  outbound_task->StartQueueTimeSw();
+  ScheduleReactorTask(outbound_task);
 }
 
 class CancellationTask : public ReactorTask {

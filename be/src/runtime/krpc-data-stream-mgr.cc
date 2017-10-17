@@ -159,7 +159,7 @@ void KrpcDataStreamMgr::AddEarlySender(const TUniqueId& finst_id,
 }
 
 void KrpcDataStreamMgr::AddData(const TUniqueId& finst_id,
-    const ProtoRowBatch& proto_batch, const TransmitDataRequestPB* request,
+    ProtoRowBatch& proto_batch, const TransmitDataRequestPB* request,
     TransmitDataResponsePB* response, kudu::rpc::RpcContext* context) {
   TPlanNodeId dest_node_id = request->dest_node_id();
   VLOG_ROW << "AddData(): fragment_instance_id=" << finst_id

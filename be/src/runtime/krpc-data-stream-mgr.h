@@ -259,7 +259,7 @@ class KrpcDataStreamMgr : public DataStreamMgrBase {
   /// TODO: enforce per-sender quotas (something like 200% of buffer_size/#senders),
   /// so that a single sender can't flood the buffer and stall everybody else.
   /// Returns OK if successful, error status otherwise.
-  void AddData(const TUniqueId& fragment_instance_id, const ProtoRowBatch& proto_batch,
+  void AddData(const TUniqueId& fragment_instance_id, ProtoRowBatch& proto_batch,
       const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
       kudu::rpc::RpcContext* context);
 

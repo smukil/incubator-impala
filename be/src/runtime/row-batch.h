@@ -68,6 +68,9 @@ struct ProtoRowBatch {
   /// RPC layer. Note that the data is not owned by the ProtoRowBatch in both directions.
   kudu::Slice tuple_data;
 
+  /// Number of times it was put into the blocked_senders queue.
+  int times_deferred;
+
   /// Utility function for returning the number of rows in this row batch.
   int num_rows() const {
     DCHECK(header.has_num_rows());

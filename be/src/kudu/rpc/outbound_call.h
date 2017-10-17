@@ -37,6 +37,8 @@
 #include "kudu/util/slice.h"
 #include "kudu/util/status.h"
 
+#include "util/stopwatch.h"
+
 DECLARE_int32(rpc_inject_cancellation_state);
 
 namespace google {
@@ -186,6 +188,11 @@ class OutboundCall {
         FLAGS_rpc_inject_cancellation_state == state();
   }
 
+  void SetTempTimerTotalTime(uint64_t total_time) { temp_timer_.SetTotalTime(total_time); }
+  void StartTempTimer() { temp_timer_.Start(); }
+  void StopTempTimer() { temp_timer_.Stop(); }
+  uint64_t TotalTempTimer() { return temp_timer_.TotalElapsedTime(); }
+
  private:
   friend class RpcController;
   FRIEND_TEST(TestRpc, TestCancellation);
@@ -275,6 +282,8 @@ class OutboundCall {
 
   // True if cancellation was requested on this call.
   bool cancellation_requested_;
+
+  impala::MonotonicStopWatch temp_timer_;
 
   DISALLOW_COPY_AND_ASSIGN(OutboundCall);
 };
