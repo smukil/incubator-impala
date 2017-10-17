@@ -145,6 +145,10 @@ class MonotonicStopWatch {
     return total_time_;
   }
 
+  void SetTotalTime(uint64_t total_time) {
+    total_time_ = total_time;
+  }
+
  private:
   /// Start epoch value.
   uint64_t start_;

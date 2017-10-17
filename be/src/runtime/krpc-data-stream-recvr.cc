@@ -69,7 +69,7 @@ class KrpcDataStreamRecvr::SenderQueue {
   // batch will make the stream exceed its buffer limit, the batch is discarded and
   // 'payload' is copied to blocked_senders_ to be responded to in the future, and the
   // method returns immediately.
-  void AddBatch(const ProtoRowBatch& proto_batch, const TransmitDataRequestPB* request,
+  void AddBatch(ProtoRowBatch& proto_batch, const TransmitDataRequestPB* request,
       TransmitDataResponsePB* response, RpcContext* context);
 
   // Decrement the number of remaining senders for this queue and signal any threads
@@ -200,7 +200,7 @@ Status KrpcDataStreamRecvr::SenderQueue::GetBatch(RowBatch** next_batch) {
   }
 }
 
-void KrpcDataStreamRecvr::SenderQueue::AddBatch(const ProtoRowBatch& proto_batch,
+void KrpcDataStreamRecvr::SenderQueue::AddBatch(ProtoRowBatch& proto_batch,
     const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
     RpcContext* context) {
 
@@ -230,6 +230,12 @@ void KrpcDataStreamRecvr::SenderQueue::AddBatch(const ProtoRowBatch& proto_batch
       // Enqueue pending sender, return.
       auto payload =
           make_unique<TransmitDataCtx>(proto_batch, context, request, response);
+      proto_batch.times_deferred++;
+      if (proto_batch.times_deferred > 1) {
+        LOG (INFO) << "XXX: Proto batch deferred " << proto_batch.times_deferred
+            << " times. Finsd_id=" << recvr_->fragment_instance_id() << " dest_id_="
+            << request->dest_node_id() << " sender_id_=" << request->sender_id();
+      }
       blocked_senders_.push(move(payload));
       COUNTER_ADD(recvr_->num_deferred_batches_, 1);
       return;
@@ -401,7 +407,7 @@ Status KrpcDataStreamRecvr::GetNext(RowBatch* output_batch, bool* eos) {
   return merger_->GetNext(output_batch, eos);
 }
 
-void KrpcDataStreamRecvr::AddBatch(const ProtoRowBatch& proto_batch,
+void KrpcDataStreamRecvr::AddBatch(ProtoRowBatch& proto_batch,
     const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
     RpcContext* context) {
   int use_sender_id = is_merging_ ? request->sender_id() : 0;

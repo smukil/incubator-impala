@@ -115,7 +115,7 @@ class KrpcDataStreamRecvr : public DataStreamRecvrBase {
   /// Add a new batch of rows to the appropriate sender queue. Does not block - if the
   /// batch can't be added, it is discarded and this method returns. The RPC that
   /// 'payload' encapsulates will be guaranteed a response to once this method is called.
-  void AddBatch(const ProtoRowBatch& proto_batch, const TransmitDataRequestPB* request,
+  void AddBatch(ProtoRowBatch& proto_batch, const TransmitDataRequestPB* request,
       TransmitDataResponsePB* response, kudu::rpc::RpcContext* context);
 
   /// Indicate that a particular sender is done. Delegated to the appropriate

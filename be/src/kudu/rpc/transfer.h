@@ -30,6 +30,8 @@
 #include "kudu/util/net/sockaddr.h"
 #include "kudu/util/status.h"
 
+#include "util/stopwatch.h"
+
 DECLARE_int32(rpc_max_message_size);
 
 namespace google {
@@ -165,6 +167,14 @@ class OutboundTransfer : public boost::intrusive::list_base_hook<> {
     return call_id_;
   }
 
+  void SetReactorQueueTime(uint64_t reactor_queue_time) { reactor_queue_time_ = reactor_queue_time; }
+  uint64_t GetReactorQueueTime() { return reactor_queue_time_; }
+
+  void SetTempTimerTotalTime(uint64_t total_time) { temp_timer_.SetTotalTime(total_time); }
+  void StartTempTimer() { temp_timer_.Start(); }
+  void StopTempTimer() { temp_timer_.Stop(); }
+  uint64_t TotalTempTimer() { return temp_timer_.TotalElapsedTime(); }
+
  private:
   OutboundTransfer(int32_t call_id,
                    const TransferPayload& payload,
@@ -188,6 +198,10 @@ class OutboundTransfer : public boost::intrusive::list_base_hook<> {
   int32_t call_id_;
 
   bool aborted_;
+
+  impala::MonotonicStopWatch temp_timer_;
+
+  uint64_t reactor_queue_time_;
 
   DISALLOW_COPY_AND_ASSIGN(OutboundTransfer);
 };

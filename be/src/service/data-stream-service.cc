@@ -71,6 +71,7 @@ void DataStreamService::TransmitData(const TransmitDataRequestPB* request,
   if (status.ok()) {
     batch.header = request->row_batch_header();
     // AddData() is guaranteed to eventually respond to this RPC so we don't do it here.
+    batch.times_deferred = 0;
     ExecEnv::GetInstance()->KrpcStreamMgr()->AddData(finst_id, batch, request,
         response, context);
   } else {

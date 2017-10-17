@@ -58,6 +58,11 @@ using std::unique_ptr;
 using std::vector;
 using strings::Substitute;
 
+DEFINE_uint64(warn_reactor_queue_slow_seconds, 1,
+  "If a RPC payload from time of request to the time it actually starts "
+  "getting written on the network is greater than this threshold in seconds, "
+ "we log a warning.");
+
 namespace kudu {
 namespace rpc {
 
@@ -394,8 +399,17 @@ void Connection::QueueOutboundCall(const shared_ptr<OutboundCall> &call) {
 
   TransferCallbacks *cb = new CallTransferCallbacks(call, this);
   awaiting_response_[call_id] = car.release();
-  QueueOutbound(gscoped_ptr<OutboundTransfer>(
-      OutboundTransfer::CreateForCallRequest(call_id, tmp_slices, n_slices, cb)));
+
+  gscoped_ptr<OutboundTransfer> outbound_transfer;
+  outbound_transfer.reset(
+      OutboundTransfer::CreateForCallRequest(call_id, tmp_slices, n_slices, cb));
+
+  call->StopTempTimer();
+  uint64_t total_time_spent_in_queue = call->TotalTempTimer();
+  outbound_transfer->SetReactorQueueTime(total_time_spent_in_queue);
+  outbound_transfer->SetTempTimerTotalTime(total_time_spent_in_queue);
+  outbound_transfer->StartTempTimer();
+  QueueOutbound(std::move(outbound_transfer));
 }
 
 // Callbacks for sending an RPC call response from the server.
@@ -613,7 +627,15 @@ void Connection::WriteHandler(ev::io &watcher, int revents) {
 
   while (!outbound_transfers_.empty()) {
     transfer = &(outbound_transfers_.front());
-
+    transfer->StopTempTimer();
+    uint64_t total_time_spent_in_queue = transfer->TotalTempTimer();
+    if (total_time_spent_in_queue > FLAGS_warn_reactor_queue_slow_seconds * 1000000000) {
+      LOG (INFO) << "XXX: RPC spent : " << (double) total_time_spent_in_queue / 1000000000
+          << " seconds from time of RPC request to the time it got picked up by Connection::WriteHandler."
+          << " Breakdown: ReactorTask queue: " << transfer->GetReactorQueueTime()
+          << " | OutboundTransfer queue time: " << total_time_spent_in_queue - transfer->GetReactorQueueTime()
+          << " address=" << remote_.ToString();
+    }
     if (!transfer->TransferStarted()) {
 
       if (transfer->is_for_outbound_call()) {
