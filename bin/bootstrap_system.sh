@@ -79,7 +79,7 @@ REAL_APT_GET=$(which apt-get)
 function apt-get {
   for ITER in $(seq 1 20); do
     echo "ATTEMPT: ${ITER}"
-    if sudo "${REAL_APT_GET}" "$@"
+    if sudo -E "${REAL_APT_GET}" "$@"
     then
       return 0
     fi
@@ -107,6 +107,10 @@ apt-get --yes install ccache g++ gcc libffi-dev liblzo2-dev libkrb5-dev \
         krb5-admin-server krb5-kdc krb5-user libsasl2-dev libsasl2-modules \
         libsasl2-modules-gssapi-mit libssl-dev make maven ninja-build ntp \
         ntpdate python-dev python-setuptools postgresql ssh wget vim-common psmisc
+
+#sudo -E DEBIAN_FRONTEND=noninteractive apt-get --yes install krb5-admin-server
+#sudo -E DEBIAN_FRONTEND=noninteractive apt-get --yes install krb5-kdc
+#sudo -E DEBIAN_FRONTEND=noninteractive apt-get --yes install krb5-user
 
 if ! { service --status-all | grep -E '^ \[ \+ \]  ssh$'; }
 then
