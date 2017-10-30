@@ -22,6 +22,7 @@
 #include "rpc/thrift-server.h"
 #include "util/auth-util.h"
 #include "util/network-util.h"
+#include "util/openssl-util.h"
 #include "util/thread.h"
 
 #include <ldap.h>
@@ -172,7 +173,7 @@ TEST(Auth, KerbAndSslEnabled) {
   ASSERT_OK(GetHostname(&hostname));
   FLAGS_ssl_client_ca_certificate = "some_path";
   FLAGS_ssl_server_certificate = "some_path";
-  ASSERT_TRUE(EnableInternalSslConnections());
+  ASSERT_TRUE(IsInternalTlsConfigured());
   SaslAuthProvider sa_internal(true);
   ASSERT_OK(
       sa_internal.InitKerberos("service_name/_HOST@some.realm", "/etc/hosts"));
