@@ -106,6 +106,9 @@ template <class T> class ThriftTestBase : public T {
   virtual void TearDown() {}
 };
 
+  // The path of the current executable file that is required for passing into the SASL
+  // library as the 'application name'.
+  string current_executable_path_;
 // This class allows us to run all the tests that derive from this in the modes enumerated
 // in 'KerberosSwitch'.
 // If the mode is USE_KUDU_KERBEROS or USE_IMPALA_KERBEROS, the MiniKdc which is a wrapper
@@ -135,9 +138,8 @@ class ThriftParamsTest : public ThriftTestBase<testing::TestWithParam<KerberosSw
       FLAGS_principal = Substitute("$0@$1", spn, realm);
 
     }
-    string current_executable_path;
-    KUDU_ASSERT_OK(kudu::Env::Default()->GetExecutablePath(&current_executable_path));
-    ASSERT_OK(InitAuth(current_executable_path));
+    KUDU_ASSERT_OK(kudu::Env::Default()->GetExecutablePath(&current_executable_path_));
+    ASSERT_OK(InitAuth(current_executable_path_));
   }
 
   virtual void TearDown() {
@@ -151,6 +153,7 @@ class ThriftParamsTest : public ThriftTestBase<testing::TestWithParam<KerberosSw
   }
 
  private:
+
   boost::scoped_ptr<kudu::MiniKdc> kdc_;
   // Create a unique directory for this test to store its files in.
   filesystem::path unique_test_dir_ = filesystem::unique_path();

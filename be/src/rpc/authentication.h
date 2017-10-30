@@ -61,12 +61,18 @@ class AuthManager {
   /// connection this applies to would be backend <-> statestore.
   AuthProvider* GetInternalAuthProvider();
 
+  void set_app_name(std::string appname) { appname_ = appname; }
+
+  const string& appname() { return appname_; }
+
  private:
   /// One-time kerberos-specific environment variable setup. Called by Init() if Kerberos
   /// is enabled.
   Status InitKerberosEnv();
 
   static AuthManager* auth_manager_;
+
+  string appname_;
 
   /// These are provided for convenience, so that demon<->demon and client<->demon services
   /// don't have to check the auth flags to figure out which auth provider to use.
