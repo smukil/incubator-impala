@@ -39,6 +39,7 @@
 #include "exec/kudu-util.h"
 #include "kudu/rpc/sasl_common.h"
 #include "kudu/security/init.h"
+#include "kudu/security/openssl_util.h"
 #include "rpc/auth-provider.h"
 #include "rpc/thrift-server.h"
 #include "transport/TSaslClientTransport.h"
@@ -674,7 +675,11 @@ Status InitAuth(const string& appname) {
   // Initializes OpenSSL.
   RETURN_IF_ERROR(AuthManager::GetInstance()->Init());
 
-  // Prevent Kudu from re-initializing OpenSSL.
+  // Prevent kudu::rpc from re-initializing OpenSSL.
+  KUDU_RETURN_IF_ERROR(kudu::security::DisableOpenSSLInitialization(),
+      "Unable to disable Kudu SSL initialization.");
+
+  // Prevent kudu::client from re-initializing OpenSSL.
   if (KuduIsAvailable()) {
     KUDU_RETURN_IF_ERROR(kudu::client::DisableOpenSSLInitialization(),
         "Unable to disable Kudu SSL initialization.");

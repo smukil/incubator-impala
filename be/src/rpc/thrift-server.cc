@@ -62,9 +62,6 @@ DEFINE_int32_hidden(rpc_cnxn_retry_interval_ms, 2000, "Deprecated");
 
 DECLARE_string(principal);
 DECLARE_string(keytab_file);
-DECLARE_string(ssl_client_ca_certificate);
-DECLARE_string(ssl_server_certificate);
-DECLARE_string(ssl_cipher_list);
 
 namespace impala {
 
@@ -94,17 +91,6 @@ bool SSLProtoVersions::IsSupported(const SSLProtocol& protocol) {
 
   // All other versions supported by OpenSSL 1.0.1 and later.
   return true;
-}
-
-bool EnableInternalSslConnections() {
-  // Enable SSL between servers only if both the client validation certificate and the
-  // server certificate are specified. 'Client' here means clients that are used by Impala
-  // services to contact other Impala services (as distinct from user clients of Impala
-  // like the shell), and 'servers' are the processes that serve those clients. The server
-  // needs a certificate to demonstrate it is who the client thinks it is; the client
-  // needs a certificate to validate that assertion from the server.
-  return !FLAGS_ssl_client_ca_certificate.empty() &&
-      !FLAGS_ssl_server_certificate.empty();
 }
 
 // Helper class that starts a server in a separate thread, and handles

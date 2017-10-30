@@ -25,6 +25,7 @@
 #include "util/auth-util.h"
 #include "util/cpu-info.h"
 #include "util/network-util.h"
+#include "util/openssl-util.h"
 
 #include "common/names.h"
 
@@ -41,6 +42,22 @@ using kudu::MetricEntity;
 DECLARE_string(hostname);
 DECLARE_string(principal);
 DECLARE_string(be_principal);
+
+// Impala's TLS flags.
+DECLARE_string(ssl_client_ca_certificate);
+DECLARE_string(ssl_server_certificate);
+DECLARE_string(ssl_private_key);
+DECLARE_string(ssl_private_key_password_cmd);
+DECLARE_string(ssl_cipher_list);
+DECLARE_string(ssl_minimum_version);
+
+// KuduRPC's TLS flags
+DECLARE_string(rpc_certificate_file);
+DECLARE_string(rpc_private_key_file);
+DECLARE_string(rpc_ca_certificate_file);
+DECLARE_string(rpc_private_key_password_cmd);
+DECLARE_string(rpc_tls_ciphers);
+DECLARE_string(rpc_tls_min_protocol);
 
 DEFINE_int32(num_acceptor_threads, 2,
     "Number of threads dedicated to accepting connection requests for RPC services");
@@ -69,6 +86,31 @@ Status RpcMgr::Init() {
         &unused_realm));
     bld.set_sasl_proto_name(service_name);
   }
+
+  if (use_tls_) {
+    // Save the original values of the Kudu flags.
+    flag_save_ca_certificate_file = FLAGS_rpc_ca_certificate_file;
+    flag_save_rpc_private_key_file = FLAGS_rpc_private_key_file;
+    flag_save_rpc_certificate_file = FLAGS_rpc_certificate_file;
+    flag_save_rpc_private_key_password_cmd = FLAGS_rpc_private_key_password_cmd;
+    flag_save_rpc_tls_ciphers = FLAGS_rpc_tls_ciphers;
+    flag_save_rpc_tls_min_protocol = FLAGS_rpc_tls_min_protocol;
+
+    // Set the hidden Kudu flags that are TLS related.
+    FLAGS_rpc_ca_certificate_file = FLAGS_ssl_client_ca_certificate;
+    FLAGS_rpc_private_key_file = FLAGS_ssl_private_key;
+    FLAGS_rpc_certificate_file = FLAGS_ssl_server_certificate;
+    FLAGS_rpc_private_key_password_cmd = FLAGS_ssl_private_key_password_cmd;
+    if (!FLAGS_ssl_cipher_list.empty()) {
+      FLAGS_rpc_tls_ciphers = FLAGS_ssl_cipher_list;
+    }
+    FLAGS_rpc_tls_min_protocol = FLAGS_ssl_minimum_version;
+
+    LOG (INFO) << "Initing RpcMgr with TLS";
+    // TODO: Cipher list and password key command.
+    bld.enable_inbound_tls();
+  }
+
   KUDU_RETURN_IF_ERROR(bld.Build(&messenger_), "Could not build messenger");
   return Status::OK();
 }
@@ -112,11 +154,22 @@ Status RpcMgr::StartServices(const TNetworkAddress& address) {
 }
 
 void RpcMgr::Shutdown() {
+  if (use_tls_) {
+    // Restore the original values of the TLS related Kudu flags.
+    FLAGS_rpc_ca_certificate_file = flag_save_ca_certificate_file;
+    FLAGS_rpc_private_key_file = flag_save_rpc_private_key_file;
+    FLAGS_rpc_certificate_file = flag_save_rpc_certificate_file;
+    FLAGS_rpc_private_key_password_cmd = flag_save_rpc_private_key_password_cmd;
+    FLAGS_rpc_tls_ciphers = flag_save_rpc_tls_ciphers;
+    FLAGS_rpc_tls_min_protocol = flag_save_rpc_tls_min_protocol;
+  }
+
   if (messenger_.get() == nullptr) return;
   for (auto service_pool : service_pools_) service_pool->Shutdown();
 
   messenger_->UnregisterAllServices();
   messenger_->Shutdown();
+
   service_pools_.clear();
 }
 

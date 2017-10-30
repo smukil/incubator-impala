@@ -102,6 +102,8 @@ class RpcMgr {
 
   bool is_inited() const { return messenger_.get() != nullptr; }
 
+  void use_tls(bool value) { use_tls_ = value; }
+
   /// Start the acceptor threads which listen on 'address', making KRPC services
   /// available. 'address' has to be a resolved IP address. Before this method is called,
   /// remote clients will get a 'connection refused' error when trying to invoke an RPC
@@ -176,6 +178,18 @@ class RpcMgr {
 
   /// True after StartServices() completes.
   bool services_started_ = false;
+
+  /// messenger_ will be configured to use TLS if this is set.
+  bool use_tls_ = false;
+
+  /// The following strings preserve the Kudu flags original values to restore in
+  /// Shutdown() as they will be modified by us.
+  string flag_save_ca_certificate_file;
+  string flag_save_rpc_private_key_file;
+  string flag_save_rpc_certificate_file;
+  string flag_save_rpc_private_key_password_cmd;
+  string flag_save_rpc_tls_ciphers;
+  string flag_save_rpc_tls_min_protocol;
 };
 
 } // namespace impala

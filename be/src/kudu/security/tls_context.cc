@@ -414,6 +414,7 @@ Status TlsContext::AdoptSignedCert(const Cert& cert) {
 
 Status TlsContext::LoadCertificateAndKey(const string& certificate_path,
                                          const string& key_path) {
+  LOG (INFO) << "Loading regular non-password protected key. Cert: " << certificate_path << "\nkey: " << key_path;
   SCOPED_OPENSSL_NO_PENDING_ERRORS;
   Cert c;
   RETURN_NOT_OK(c.FromFile(certificate_path, DataFormat::PEM));
@@ -426,6 +427,7 @@ Status TlsContext::LoadCertificateAndKey(const string& certificate_path,
 Status TlsContext::LoadCertificateAndPasswordProtectedKey(const string& certificate_path,
                                                           const string& key_path,
                                                           const PasswordCallback& password_cb) {
+  LOG (INFO) << "Loading password protected key. Cert: " << certificate_path << "\nkey: " << key_path;
   SCOPED_OPENSSL_NO_PENDING_ERRORS;
   Cert c;
   RETURN_NOT_OK_PREPEND(c.FromFile(certificate_path, DataFormat::PEM),

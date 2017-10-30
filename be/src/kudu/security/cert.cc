@@ -69,7 +69,8 @@ int GetKuduKerberosPrincipalOidNid() {
 
 X509* Cert::GetEndOfChainX509() const {
   CHECK_GT(chain_len(), 0);
-  return sk_X509_value(data_.get(), chain_len() - 1);
+  //return sk_X509_value(data_.get(), chain_len() - 1);
+  return sk_X509_value(data_.get(), 0);
 }
 
 Status Cert::FromString(const std::string& data, DataFormat format) {
