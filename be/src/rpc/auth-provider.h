@@ -179,7 +179,7 @@ class NoAuthProvider : public AuthProvider {
 /// The first entry point to the authentication subsystem.  Performs initialization
 /// of Sasl, the global AuthManager, and the two authentication providers.  Appname
 /// should generally be argv[0].
-Status InitAuth(const std::string& appname);
+Status InitAuth(std::string appname);
 
 }
 

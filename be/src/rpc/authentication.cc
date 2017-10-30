@@ -561,7 +561,10 @@ void SaslSetMutex() {
 }
 
 
-Status InitAuth(const string& appname) {
+Status InitAuth(string appname) {
+
+  AuthManager::GetInstance()->set_app_name(std::move(appname));
+
   // We only set up Sasl things if we are indeed going to be using Sasl.
   // Checking of these flags for sanity is done later, but this check is good
   // enough at this early stage:
@@ -644,7 +647,8 @@ Status InitAuth(const string& appname) {
     SaslSetMutex();
     try {
       // We assume all impala processes are both server and client.
-      sasl::TSaslServer::SaslInit(GENERAL_CALLBACKS, appname);
+      sasl::TSaslServer::SaslInit(GENERAL_CALLBACKS, AuthManager::GetInstance()->appname());
+      //sasl::TSaslServer::SaslInit(GENERAL_CALLBACKS, appname);
       sasl::TSaslClient::SaslInit(GENERAL_CALLBACKS);
     } catch (sasl::SaslServerImplException& e) {
       stringstream err_msg;
