@@ -30,6 +30,9 @@ under the License.
         <tr>
           <td>Number of outbound calls in filght</td><td>{{num_outbound_calls_in_flight}}</td>
         </tr>
+        <tr>
+          <td>Number of connections accepted</td><td>{{rpc_connections_accepted}}</td>
+        </tr>
       </table>
     </tr></td>
   </thead>
@@ -68,61 +71,58 @@ under the License.
             {{#rpc_method_metrics}}
               <tr><td colspan=9>
                 <strong>Method: <i>{{method_name}}</i>    | </strong>
-                {{#handling_time_histogram}}
-                <strong>(Count: <i>{{count}}</i>;</strong>
-                {{/handling_time_histogram}}
-                <strong>Num. in handlers: <i>{{num_in_handlers}}</i>)</strong>
+                {{#payload_size_histogram}}
+                <strong>(Count: <i>{{count}}</i>)</strong>
+                {{/payload_size_histogram}}
               </td></tr>
               <tr>
                 <th></th>
                 <th>Min</th>
                 <th>Max</th>
-                <th>25th %ile</th>
-                <th>50th %ile</th>
                 <th>75th %ile</th>
-                <th>90th %ile</th>
                 <th>95th %ile</th>
+                <th>99th %ile</th>
                 <th>99.9th %ile</th>
-              <tr>
+                <th>99.99th %ile</th>
               </tr>
+              <tr>
+              {{#payload_size_histogram}}
+                <td>Payload size (KB)</td>
+                <td><script>document.write({{min}}/1000)</script>KB</td>
+                <td><script>document.write({{max}}/1000)</script>KB</td>
+                <td><script>document.write({{75th %-ile}}/1000)</script>KB</td>
+                <td><script>document.write({{95th %-ile}}/1000)</script>KB</td>
+                <td><script>document.write({{99th %-ile}}/1000)</script>KB</td>
+                <td><script>document.write({{"99.9th %-ile"}}/1000)</script>KB</td>
+                <td><script>document.write({{"99.99th %-ile"}}/1000)</script>KB</td>
+              {{/payload_size_histogram}}
+              </tr>
+              <tr>
               {{#queueing_time_histogram}}
                 <td>Queueing time (ms)</td>
                 <td>{{min}}ms</td>
                 <td>{{max}}ms</td>
-                <td>{{25th %-ile}}ms</td>
-                <td>{{50th %-ile}}ms</td>
                 <td>{{75th %-ile}}ms</td>
-                <td>{{90th %-ile}}ms</td>
                 <td>{{95th %-ile}}ms</td>
+                <td>{{99th %-ile}}ms</td>
                 <td>{{"99.9th %-ile"}}ms</td>
+                <td>{{"99.99th %-ile"}}ms</td>
               {{/queueing_time_histogram}}
               </tr>
-              </tr>
-              {{#handling_time_histogram}}
-                <td>Handling time (ms)</td>
-                <td>{{min}}ms</td>
-                <td>{{max}}ms</td>
-                <td>{{25th %-ile}}ms</td>
-                <td>{{50th %-ile}}ms</td>
-                <td>{{75th %-ile}}ms</td>
-                <td>{{90th %-ile}}ms</td>
-                <td>{{95th %-ile}}ms</td>
-                <td>{{"99.9th %-ile"}}ms</td>
-              {{/handling_time_histogram}}
-              </tr>
+              {{#per_method_metrics_from_krpc}}
               <tr>
-              {{#payload_size_histogram}}
-                <td>Payload size (bytes)</td>
-                <td>{{min}}B</td>
-                <td>{{max}}B</td>
-                <td>{{25th %-ile}}B</td>
-                <td>{{50th %-ile}}B</td>
-                <td>{{75th %-ile}}B</td>
-                <td>{{90th %-ile}}B</td>
-                <td>{{95th %-ile}}B</td>
-                <td>{{"99.9th %-ile"}}B</td>
-              {{/payload_size_histogram}}
+                <!-- We currently expect only one type of per RPC metric from KRPC, so
+                we hardcode the title "Handling time" here. -->
+                <td>Handling time (ms)</td>
+                <td><script>document.write({{min}}/1000)</script>ms</td>
+                <td><script>document.write({{max}}/1000)</script>ms</td>
+                <td><script>document.write({{percentile_75}}/1000)</script>ms</td>
+                <td><script>document.write({{percentile_95}}/1000)</script>ms</td>
+                <td><script>document.write({{percentile_99}}/1000)</script>ms</td>
+                <td><script>document.write({{percentile_99_9}}/1000)</script>ms</td>
+                <td><script>document.write({{percentile_99_99}}/1000)</script>ms</td>
               </tr>
+              {{/per_method_metrics_from_krpc}}
             {{/rpc_method_metrics}}
             </table>
           </td>

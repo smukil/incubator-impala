@@ -57,7 +57,11 @@ class HistogramMetric : public Metric {
       container.AddMember(
           "95th %-ile", histogram_->ValueAtPercentile(95), document->GetAllocator());
       container.AddMember(
+          "99th %-ile", histogram_->ValueAtPercentile(99), document->GetAllocator());
+      container.AddMember(
           "99.9th %-ile", histogram_->ValueAtPercentile(99.9), document->GetAllocator());
+      container.AddMember(
+          "99.99th %-ile", histogram_->ValueAtPercentile(99.99), document->GetAllocator());
       container.AddMember("max", histogram_->MaxValue(), document->GetAllocator());
       container.AddMember("min", histogram_->MinValue(), document->GetAllocator());
       container.AddMember("count", histogram_->TotalCount(), document->GetAllocator());

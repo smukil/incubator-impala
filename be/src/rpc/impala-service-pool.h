@@ -56,6 +56,7 @@ class ImpalaServicePool : public kudu::rpc::RpcService {
 
   const std::string service_name() const;
 
+  // Expose the service pool metrics by storing them as JSON in 'value'.
   void ToJson(rapidjson::Value* value, rapidjson::Document* document);
 
  private:
@@ -66,12 +67,13 @@ class ImpalaServicePool : public kudu::rpc::RpcService {
   std::vector<std::unique_ptr<Thread> > threads_;
   kudu::rpc::LifoServiceQueue service_queue_;
 
-  // Method specific metrics. Not to be confused with kudu::rpc::RpcMethodInfo.
+  // RPC method specific metrics. Not to be confused with kudu::rpc::RpcMethodInfo.
+  // All time is measured in wallclock time.
   struct RpcMethodMetrics {
+    // Histogram of time taken to handle all instances of this RPC method.
     std::unique_ptr<HistogramMetric> queueing_time;
-    std::unique_ptr<HistogramMetric> handling_time;
+    // Histogram of payload sizes of all instances of this RPC method.
     std::unique_ptr<HistogramMetric> payload_size;
-    AtomicInt32 num_in_handlers;
   };
   // A map of method names to their metrics.
   std::map<std::string, RpcMethodMetrics> method_metrics_;
@@ -87,7 +89,7 @@ class ImpalaServicePool : public kudu::rpc::RpcService {
 
   // Dummy histogram needed to call InboundCall::RecordHandlingStarted() to set
   // appropriate internal KRPC state. Unused otherwise.
-  scoped_refptr<kudu::Histogram> unused_histogram_;
+  scoped_refptr<kudu::Histogram> incoming_queue_time_;
 
   boost::mutex shutdown_lock_;
   bool closing_ = false;

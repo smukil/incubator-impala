@@ -34,6 +34,7 @@
 #include "kudu/util/metrics.h"
 #include "kudu/util/status.h"
 #include "kudu/util/trace.h"
+#include "kudu/util/jsonwriter.h"
 
 #include "common/status.h"
 
@@ -46,7 +47,7 @@ using boost::mutex;
 using std::shared_ptr;
 using strings::Substitute;
 
-METRIC_DEFINE_histogram(server, impala_unused,
+METRIC_DEFINE_histogram(server, incoming_rpc_queue_time,
     "RPC Queue Time",
     kudu::MetricUnit::kMicroseconds,
     "Number of microseconds incoming RPC requests spend in the worker queue",
@@ -59,7 +60,7 @@ ImpalaServicePool::ImpalaServicePool(std::unique_ptr<kudu::rpc::ServiceIf> servi
                          size_t service_queue_length)
   : service_(std::move(service)),
     service_queue_(service_queue_length),
-    unused_histogram_(METRIC_impala_unused.Instantiate(entity)) {
+    incoming_queue_time_(METRIC_incoming_rpc_queue_time.Instantiate(entity)) {
 
 }
 
@@ -179,13 +180,15 @@ void ImpalaServicePool::RunThread() {
       return;
     }
 
-    MonoTime monotime_after_dequeue = MonoTime::Now();
-    uint64_t time_in_queue =
-        (monotime_after_dequeue - incoming->GetTimeReceived()).ToMilliseconds();
+    //uint64_t time_in_queue =
+    //    (monotime_after_dequeue - incoming->GetTimeReceived()).ToMilliseconds();
 
-    // We need to call RecordHandlingStarted() to update some internal InboundCall state.
-    incoming->RecordHandlingStarted(unused_histogram_);
+    incoming->RecordHandlingStarted(incoming_queue_time_);
     ADOPT_TRACE(incoming->trace());
+    
+    uint64_t time_in_queue =
+        (incoming->timing().time_handled - incoming->timing().time_received).
+          ToMilliseconds();
 
     if (PREDICT_FALSE(incoming->ClientTimedOut())) {
       TRACE_TO(incoming->trace(), "Skipping call since client already timed out");
@@ -207,30 +210,19 @@ void ImpalaServicePool::RunThread() {
 
     string method_name = incoming->remote_method().method_name();
     int32_t size = incoming->GetTransferSize();
-    {
-      lock_guard<SpinLock> l(method_metrics_lock_);
-      auto* method = &method_metrics_[method_name];
-      method->num_in_handlers.Add(1);
-    }
 
     // Release the InboundCall pointer -- when the call is responded to,
     // it will get deleted at that point.
     service_->Handle(incoming.release());
 
-    uint64_t time_to_handle = (MonoTime::Now() - monotime_after_dequeue).ToMilliseconds();
     {
       // TODO: Consider populating method_metrics_ map on service pool init and getting
       // rid of the spin lock.
       lock_guard<SpinLock> l(method_metrics_lock_);
       RpcMethodMetrics* method = &method_metrics_[method_name];
-      method->num_in_handlers.Add(-1);
       if (method->queueing_time.get() == nullptr) {
         string name = Substitute("$0-queueing-time", method_name);
         method->queueing_time.reset(new HistogramMetric(
-                MakeTMetricDef(name, TMetricKind::HISTOGRAM, TUnit::TIME_MS),
-                300000, 3));
-        name = Substitute("$0-handling-time", method_name);
-        method->handling_time.reset(new HistogramMetric(
                 MakeTMetricDef(name, TMetricKind::HISTOGRAM, TUnit::TIME_MS),
                 300000, 3));
         name = Substitute("$0-payload-size", method_name);
@@ -239,7 +231,6 @@ void ImpalaServicePool::RunThread() {
                 1024 * 1024 * 1024, 3));
       }
       method->queueing_time->Update(time_in_queue);
-      method->handling_time->Update(time_to_handle);
       method->payload_size->Update(size);
     }
 
@@ -268,22 +259,15 @@ void ImpalaServicePool::ToJson(Value* value, Document* document) {
   {
     lock_guard<SpinLock> l(method_metrics_lock_);
     for (const auto& method : method_metrics_) {
-      if (method.second.handling_time.get() == nullptr) continue;
+      if (method.second.payload_size.get() == nullptr) continue;
       Value method_entry(kObjectType);
       Value method_name(method.first.c_str(), document->GetAllocator());
       method_entry.AddMember("method_name", method_name, document->GetAllocator());
-      method_entry.AddMember("num_in_handlers", method.second.num_in_handlers.Load(),
-          document->GetAllocator());
 
       Value queueing_time_histogram(kObjectType);
       method.second.queueing_time->ToJson(document, &queueing_time_histogram);
       method_entry.AddMember("queueing_time_histogram",
           queueing_time_histogram, document->GetAllocator());
-
-      Value handling_time_histogram(kObjectType);
-      method.second.handling_time->ToJson(document, &handling_time_histogram);
-      method_entry.AddMember("handling_time_histogram",
-          handling_time_histogram, document->GetAllocator());
 
       Value payload_size_histogram(kObjectType);
       method.second.payload_size->ToJson(document, &payload_size_histogram);

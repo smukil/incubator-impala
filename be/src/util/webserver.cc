@@ -463,8 +463,10 @@ void Webserver::RenderUrlWithTemplate(const ArgumentMap& arguments,
     } else {
       stringstream buffer;
       buffer << tmpl.rdbuf();
+      LOG (INFO) << "RenderUrlWithTemplate: 'buffer': " << buffer.str();
       RenderTemplate(buffer.str(), Substitute("$0/", FLAGS_webserver_doc_root), document,
           output);
+      LOG (INFO) << "RenderUrlWithTemplate: 'output': " << output->str();
     }
   }
 }

@@ -161,7 +161,7 @@ class RpcMgr {
   }
 
  private:
-  /// One pool per registered service.
+  /// One pool per registered service. scoped_refptr<> is dictated by the Kudu interface.
   std::vector<scoped_refptr<ImpalaServicePool>> service_pools_;
 
   /// Required Kudu boilerplate for constructing the MetricEntity passed
