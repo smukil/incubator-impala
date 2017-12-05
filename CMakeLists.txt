@@ -307,6 +307,11 @@ IMPALA_ADD_THIRDPARTY_LIB(krb5 ${KERBEROS_INCLUDE_DIR} "" ${KERBEROS_LIBRARY})
 # testing.
 find_package(KerberosPrograms REQUIRED)
 
+# The tests as well as any binaries which are run as subprocesses by tests (eg tserver,
+# master, and the 'kudu' CLI tool) need to link this in. We have to set it
+# here so it's accessible by all targets.
+set(KRB5_REALM_OVERRIDE -Wl,--undefined=krb5_realm_override_loaded krb5_realm_override)
+
 ###################################################################
 
 # System dependencies
