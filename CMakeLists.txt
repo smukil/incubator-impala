@@ -307,6 +307,8 @@ IMPALA_ADD_THIRDPARTY_LIB(krb5 ${KERBEROS_INCLUDE_DIR} "" ${KERBEROS_LIBRARY})
 # testing.
 find_package(KerberosPrograms REQUIRED)
 
+set(KRB5_REALM_OVERRIDE -Wl,--undefined=krb5_realm_override_loaded krb5_realm_override)
+
 ###################################################################
 
 # System dependencies
