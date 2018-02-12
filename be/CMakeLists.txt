@@ -492,6 +492,18 @@ FUNCTION(ADD_BE_TEST TEST_NAME)
   ADD_DEPENDENCIES(be-test ${TEST_NAME})
 ENDFUNCTION()
 
+# Utility CMake function to make specifying tests and benchmarks less verbose
+FUNCTION(ADD_RPC_MGR_BE_TEST TEST_NAME)
+  # This gets the directory where the test is from (e.g. 'exprs' or 'runtime')
+  file(RELATIVE_PATH DIR_NAME "${CMAKE_SOURCE_DIR}/be/src/" ${CMAKE_CURRENT_SOURCE_DIR})
+  ADD_EXECUTABLE(${TEST_NAME} ${TEST_NAME}.cc rpc-mgr-test-base.h)
+  TARGET_LINK_LIBRARIES(${TEST_NAME} ${IMPALA_TEST_LINK_LIBS})
+  set(CMAKE_EXE_LINKER_FLAGS "--start-group")
+  ADD_TEST(${TEST_NAME} "${BUILD_OUTPUT_ROOT_DIRECTORY}/${DIR_NAME}/${TEST_NAME}"
+    -log_dir=$ENV{IMPALA_BE_TEST_LOGS_DIR})
+  ADD_DEPENDENCIES(be-test ${TEST_NAME})
+ENDFUNCTION()
+
 # Similar utility function for tests that use the UDF SDK
 FUNCTION(ADD_UDF_TEST TEST_NAME)
   # This gets the directory where the test is from (e.g. 'exprs' or 'runtime')
