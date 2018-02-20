@@ -45,6 +45,7 @@
 #include "util/auth-util.h"
 #include "util/debug-util.h"
 #include "util/error-util.h"
+#include "util/filesystem-util.h"
 #include "util/network-util.h"
 #include "util/os-util.h"
 #include "util/promise.h"
@@ -831,6 +832,15 @@ Status AuthManager::InitKerberosEnv() {
       LOG(INFO) << "Kerberos debugging is enabled; kerberos messages written to "
                 << FLAGS_krb5_debug_file;
     }
+  }
+
+  // Attempt to set the kerberos replay cache to /dev/shm to avoid disk writes.
+  if (FileSystemUtil::VerifyIsDirectory("/dev/shm").ok()) {
+    setenv("KRB5RCACHEDIR", "/dev/shm", 1);
+    LOG(INFO) << "Set Kerberos replay cache directory to /dev/shm.";
+  } else {
+    LOG(WARNING) << "Unable to set Kerberos replay cache directory to /dev/shm. "
+                 << "Using Kerberos defaults. Expect poor Kerberos handshake performance.";
   }
 
   return Status::OK();
