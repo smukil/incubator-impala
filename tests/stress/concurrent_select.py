@@ -65,7 +65,7 @@ from Queue import Empty   # Must be before Queue below
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime
-from multiprocessing import Lock, Process, Queue, Value
+from multiprocessing import Lock, Process, Queue, Value, Manager
 from random import choice, random, randrange
 from sys import exit, maxint
 from tempfile import gettempdir
@@ -272,6 +272,8 @@ class StressRunner(object):
 
   Queries will be executed in separate processes since python threading is limited
   to the use of a single CPU.
+
+  TODO: Move cross-process shared variables out of this class.
   """
 
   # This is the point at which the work queue will block because it is full.
@@ -301,16 +303,6 @@ class StressRunner(object):
     self._max_mem_mb_reported_usage = Value("i", -1)   # -1 => Unknown
     self._max_mem_mb_usage = Value("i", -1)   # -1 => Unknown
 
-    # All values below are cumulative.
-    self._num_queries_dequeued = Value("i", 0)
-    self._num_queries_started = Value("i", 0)
-    self._num_queries_finished = Value("i", 0)
-    self._num_queries_exceeded_mem_limit = Value("i", 0)
-    self._num_queries_cancelled = Value("i", 0)
-    self._num_queries_timedout = Value("i", 0)
-    self._num_result_mismatches = Value("i", 0)
-    self._num_other_errors = Value("i", 0)
-
     self.cancel_probability = 0
     self.spill_probability = 0
 
@@ -326,9 +318,118 @@ class StressRunner(object):
 
     self._num_queries_to_run = None
     self._query_producer_thread = None
-    self._query_runners = list()
+
+    self._list_manager = Manager()
+    # This lock is used to synchronize access to the '_query_runners' list and also to all
+    # the '_past_runners*' members.
+    self._query_runners_lock = Lock()
+    self._query_runners = self._list_manager.list()
+
+    # These are the cumulative values of all the queries that have started/finished/-
+    # dequeued, etc. on runners that have already died. Every time we notice that a query
+    # runner has died, we update these values.
+    self._past_runners_num_queries_dequeued = 0
+    self._past_runners_num_queries_started = 0
+    self._past_runners_num_queries_finished = 0
+    self._past_runners_num_queries_exceeded_mem_limit = 0
+    self._past_runners_num_queries_cancelled = 0
+    self._past_runners_num_queries_timedout = 0
+    self._past_runners_num_result_mismatches = 0
+    self._past_runners_num_other_errors = 0
+
     self._query_consumer_thread = None
     self._mem_polling_thread = None
+
+  def _record_runner_metrics_before_evict(self, query_runner):
+    """ Before removing 'query_runner' from the self._query_runners list, record its
+        metrics. Must only be called if 'query_runner' is to be removed from the list.
+        MUST hold '_query_runners_lock' before calling.
+    """
+    self._past_runners_num_queries_dequeued += query_runner._num_queries_dequeued.value
+    self._past_runners_num_queries_started += query_runner._num_queries_started.value
+    self._past_runners_num_queries_finished += query_runner._num_queries_finished.value
+    self._past_runners_num_queries_exceeded_mem_limit += \
+        query_runner._num_queries_exceeded_mem_limit.value
+    self._past_runners_num_queries_cancelled += query_runner._num_queries_cancelled.value
+    self._past_runners_num_queries_timedout += query_runner._num_queries_timedout.value
+    self._past_runners_num_result_mismatches += query_runner._num_result_mismatches.value
+    self._past_runners_num_other_errors += query_runner._num_other_errors.value
+
+  def _total_num_queries_started(self):
+    with self._query_runners_lock:
+      total_started = self._past_runners_num_queries_started
+      for runner in self._query_runners:
+        total_started += runner._num_queries_started.value
+    return total_started
+
+  def _total_num_queries_finished(self):
+    with self._query_runners_lock:
+      total_finished = self._past_runners_num_queries_finished
+      for runner in self._query_runners:
+        total_finished += runner._num_queries_finished.value
+    return total_finished
+
+  def _total_num_queries_running(self):
+    with self._query_runners_lock:
+      total_started = self._past_runners_num_queries_started
+      total_finished = self._past_runners_num_queries_finished
+      for runner in self._query_runners:
+        total_started += runner._num_queries_started.value
+        total_finished += runner._num_queries_finished.value
+    num_running = total_started - total_finished
+    assert num_running >= 0, "The number of running queries is negative"
+    return num_running
+
+  def _total_num_queries_dequeued(self):
+    with self._query_runners_lock:
+      return self._total_num_queries_dequeued_no_lock()
+
+  def _total_num_queries_dequeued_no_lock(self):
+    """ TODO: Get rid of this function after reformatting how we obtain query indices.
+        _query_runners_lock MUST be taken before calling this function.
+    """
+    total_dequeued = self._past_runners_num_queries_dequeued
+    for runner in self._query_runners:
+      total_dequeued += runner._num_queries_dequeued.value
+    return total_dequeued
+
+  def _total_num_queries_exceeded_mem_limit(self):
+    with self._query_runners_lock:
+      total_exceeded = self._past_runners_num_queries_exceeded_mem_limit
+      for runner in self._query_runners:
+        total_exceeded += runner._num_queries_exceeded_mem_limit.value
+    return total_exceeded
+
+  def _total_num_queries_cancelled(self):
+    with self._query_runners_lock:
+      total_cancelled = self._past_runners_num_queries_cancelled
+      for runner in self._query_runners:
+        total_cancelled += runner._num_queries_cancelled.value
+    return total_cancelled
+
+  def _total_num_queries_timedout(self):
+    with self._query_runners_lock:
+      total_timedout = self._past_runners_num_queries_timedout
+      for runner in self._query_runners:
+        total_timedout += runner._num_queries_timedout.value
+    return total_timedout
+
+  def _total_num_result_mismatches(self):
+    with self._query_runners_lock:
+      total_mismatches = self._past_runners_num_result_mismatches
+      for runner in self._query_runners:
+        total_mismatches += runner._num_result_mismatches.value
+    return total_mismatches
+
+  def _total_num_other_errors(self):
+    with self._query_runners_lock:
+      total_other_errors = self._past_runners_num_other_errors
+      for runner in self._query_runners:
+        total_other_errors += runner._num_other_errors.value
+    return total_other_errors
+
+  def _num_runners_remaining(self):
+    return len(self._query_runners)
 
   def run_queries(
       self, queries, impala, num_queries_to_run, mem_overcommit_pct, should_print_status,
@@ -419,25 +520,40 @@ class StressRunner(object):
         LOG.error("Error producing queries: %s", e)
         current_thread().error = e
         raise e
+      LOG.info("Producing thread completed job. Exiting...")
     self._query_producer_thread = create_and_start_daemon_thread(
         enqueue_queries, "Query Producer")
 
   def _start_consuming_queries(self, impala):
     def start_additional_runners_if_needed():
       try:
-        while self._num_queries_started.value < self._num_queries_to_run:
+        while self._total_num_queries_started() < self._num_queries_to_run:
           sleep(1.0 / self.startup_queries_per_sec)
           # Remember num dequeued/started are cumulative.
           with self._submit_query_lock:
-            if self._num_queries_dequeued.value != self._num_queries_started.value:
+            LOG.debug("Started {0} queries. Dequeued {1} queries".format(
+                self._total_num_queries_started(), self._total_num_queries_dequeued()))
+            if self._total_num_queries_dequeued() != self._total_num_queries_started():
               # Assume dequeued queries are stuck waiting for cluster resources so there
               # is no point in starting an additional runner.
               continue
-          impalad = impala.impalads[len(self._query_runners) % len(impala.impalads)]
-          runner = Process(target=self._start_single_runner, args=(impalad, ))
-          runner.daemon = True
-          self._query_runners.append(runner)
-          runner.start()
+          impalad = impala.impalads[self._num_runners_remaining() % len(impala.impalads)]
+
+          # Create a QueryRunner object.
+          query_runner = QueryRunner()
+          query_runner.impalad = impalad
+          query_runner.results_dir = self.results_dir
+          query_runner.use_kerberos = self.use_kerberos
+          query_runner.common_query_options = self.common_query_options
+
+          query_runner.proc = \
+              Process(target=self._start_single_runner, args=(query_runner, ))
+          query_runner.proc.daemon = True
+          with self._query_runners_lock:
+            self._query_runners.append(query_runner)
+          query_runner.proc.start()
+
+        LOG.info("Consuming thread completed job. Exiting...")
       except Exception as e:
         LOG.error("Error consuming queries: %s", e)
         current_thread().error = e
@@ -456,10 +572,10 @@ class StressRunner(object):
       # while no queries were running.
       ready_to_unlock = None
       try:
-        while self._num_queries_started.value < self._num_queries_to_run:
+        while self._total_num_queries_started() < self._num_queries_to_run:
           if ready_to_unlock:
             assert query_sumbission_is_locked, "Query submission not yet locked"
-            assert not self._num_queries_running, "Queries are still running"
+            assert not self._total_num_queries_running(), "Queries are still running"
             LOG.debug("Resuming query submission")
             self._next_leak_check_unix_time.value = int(
                 time() + 60 * self.leak_check_interval_mins)
@@ -472,7 +588,7 @@ class StressRunner(object):
               self.leak_check_interval_mins and
               time() > self._next_leak_check_unix_time.value
           ):
-            assert self._num_queries_running <= len(self._query_runners), \
+            assert self._total_num_queries_running() <= self._num_runners_remaining(), \
                 "Each running query should belong to a runner"
             LOG.debug("Stopping query submission")
             self._submit_query_lock.acquire()
@@ -497,7 +613,7 @@ class StressRunner(object):
             max_actual = -1
           self._set_mem_usage_values(max_reported, max_actual)
 
-          if query_sumbission_is_locked and not self._num_queries_running:
+          if query_sumbission_is_locked and not self._total_num_queries_running():
             if ready_to_unlock is None:
               ready_to_unlock = False
             else:
@@ -528,23 +644,15 @@ class StressRunner(object):
         self._max_mem_mb_reported_usage.value = reported
         self._max_mem_mb_usage.value = actual
 
-  @property
-  def _num_queries_running(self):
-    num_running = self._num_queries_started.value - self._num_queries_finished.value
-    assert num_running >= 0, "The number of running queries is negative"
-    return num_running
-
-  def _start_single_runner(self, impalad):
+  def _start_single_runner(self, query_runner):
     """Consumer function to take a query of the queue and run it. This is intended to
     run in a separate process so validating the result set can use a full CPU.
     """
     LOG.debug("New query runner started")
-    runner = QueryRunner()
-    runner.impalad = impalad
-    runner.results_dir = self.results_dir
-    runner.use_kerberos = self.use_kerberos
-    runner.common_query_options = self.common_query_options
-    runner.connect()
+
+    # The query runner should already be set up. We just need to connect() before using
+    # the runner.
+    query_runner.connect()
 
     while not self._query_queue.empty():
       try:
@@ -555,9 +663,10 @@ class StressRunner(object):
         LOG.debug("Query running aborting due to closed query queue")
         break
       LOG.debug("Getting query_idx")
-      with self._num_queries_dequeued.get_lock():
-        query_idx = self._num_queries_dequeued.value
-        self._num_queries_dequeued.value += 1
+      with self._query_runners_lock:
+        query_idx = self._total_num_queries_dequeued_no_lock()
+        increment(query_runner._num_queries_dequeued)
+        LOG.debug("Query_idx: {0} | PID: {1}".format(query_idx, query_runner.proc.pid))
 
       if not query.required_mem_mb_without_spilling:
         mem_limit = query.required_mem_mb_with_spilling
@@ -572,7 +681,7 @@ class StressRunner(object):
         solo_runtime = query.solo_runtime_secs_with_spilling
 
       LOG.debug("Waiting for other query runners to start their queries")
-      while query_idx > self._num_queries_started.value:
+      while query_idx > self._total_num_queries_started():
         sleep(0.1)
 
       self._mem_mb_needed_for_next_query.value = mem_limit
@@ -581,18 +690,21 @@ class StressRunner(object):
       with self._mem_broker.reserve_mem_mb(mem_limit) as reservation_id:
         LOG.debug("Received memory reservation")
         with self._submit_query_lock:
-          increment(self._num_queries_started)
+          increment(query_runner._num_queries_started)
+
         should_cancel = self.cancel_probability > random()
         if should_cancel:
           timeout = randrange(1, max(int(solo_runtime), 2))
         else:
-          timeout = solo_runtime * max(
-              10, self._num_queries_started.value - self._num_queries_finished.value)
-        report = runner.run_query(query, timeout, mem_limit, should_cancel=should_cancel)
+          timeout = solo_runtime * max(10, query_runner._num_queries_started.value - \
+              query_runner._num_queries_finished.value)
+        report = query_runner.run_query(
+            query, timeout, mem_limit, should_cancel=should_cancel)
         LOG.debug("Got execution report for query")
         if report.timed_out and should_cancel:
           report.was_cancelled = True
-        self._update_from_query_report(report)
+        query_runner.update_from_query_report(report)
+
         if report.non_mem_limit_error:
           error_msg = str(report.non_mem_limit_error)
           # There is a possible race during cancellation. If a fetch request fails (for
@@ -621,7 +733,7 @@ class StressRunner(object):
             self._num_successive_errors.value = 0
             continue
           increment(self._num_successive_errors)
-          increment(self._num_other_errors)
+          increment(query_runner._num_other_errors)
           self._write_query_profile(report)
           raise Exception("Query {0} failed: {1}".format(report.query_id, error_msg))
         if (
@@ -638,7 +750,7 @@ class StressRunner(object):
             (self._verify_results and report.result_hash != query.result_hash)
         ):
           increment(self._num_successive_errors)
-          increment(self._num_result_mismatches)
+          increment(query_runner._num_result_mismatches)
           self._write_query_profile(report)
           raise Exception(dedent("""\
                                  Result hash mismatch; expected {expected}, got {actual}
@@ -652,6 +764,7 @@ class StressRunner(object):
           raise Exception(
               "Query unexpectedly timed out. Query ID: {0}".format(report.query_id))
         self._num_successive_errors.value = 0
+    LOG.debug("Query runner completed...")
 
   def _print_status_header(self):
     print(" | ".join(self._status_headers))
@@ -664,19 +777,19 @@ class StressRunner(object):
     status_format = " | ".join(["%%%ss" % len(header) for header in self._status_headers])
     print(status_format % (
         # Done
-        self._num_queries_finished.value,
+        self._total_num_queries_finished(),
         # Running
-        self._num_queries_started.value - self._num_queries_finished.value,
+        self._total_num_queries_running(),
         # Mem Lmt Ex
-        self._num_queries_exceeded_mem_limit.value,
+        self._total_num_queries_exceeded_mem_limit(),
         # Time Out
-        self._num_queries_timedout.value - self._num_queries_cancelled.value,
+        self._total_num_queries_timedout() - self._total_num_queries_cancelled(),
         # Cancel
-        self._num_queries_cancelled.value,
+        self._total_num_queries_cancelled(),
         # Err
-        self._num_other_errors.value,
+        self._total_num_other_errors(),
         # Incorrect
-        self._num_result_mismatches.value,
+        self._total_num_result_mismatches(),
         # Next Qry Mem Lmt
         self._mem_mb_needed_for_next_query.value,
         # Total Qry Mem Lmt
@@ -685,16 +798,6 @@ class StressRunner(object):
         "" if reported_mem == -1 else reported_mem,
         # RSS Mem
         "" if actual_mem == -1 else actual_mem))
-
-  def _update_from_query_report(self, report):
-    LOG.debug("Updating runtime stats")
-    increment(self._num_queries_finished)
-    if report.mem_limit_exceeded:
-      increment(self._num_queries_exceeded_mem_limit)
-    if report.was_cancelled:
-      increment(self._num_queries_cancelled)
-    if report.timed_out:
-      increment(self._num_queries_timedout)
 
   def _write_query_profile(self, report):
     if not (report.profile and report.query_id):
@@ -714,9 +817,9 @@ class StressRunner(object):
 
   def _check_for_test_failure(self):
     if (
-        self._num_other_errors.value > 0 or
-        self._num_result_mismatches.value > 0 or
-        self._num_queries_timedout.value - self._num_queries_cancelled.value > 0
+        self._total_num_other_errors() > 0 or
+        self._total_num_result_mismatches() > 0 or
+        self._total_num_queries_timedout() - self._total_num_queries_cancelled() > 0
     ):
       LOG.error("Failing the stress test due to unexpected errors, incorrect results, or "
                 "timed out queries. See the report line above for details.")
@@ -728,10 +831,11 @@ class StressRunner(object):
     lines_printed = 1
     sleep_secs = 0.1
 
+    num_runners_remaining = self._num_runners_remaining()
     while (
         self._query_producer_thread.is_alive() or
         self._query_consumer_thread.is_alive() or
-        self._query_runners
+        num_runners_remaining
     ):
       if self._query_producer_thread.error or self._query_consumer_thread.error:
         # This is bad enough to abort early. A failure here probably means there's a
@@ -739,32 +843,64 @@ class StressRunner(object):
         # not critical so is ignored.
         LOG.error("Aborting due to error in producer/consumer")
         sys.exit(1)
-      checked_for_crashes = False
-      for idx, runner in enumerate(self._query_runners):
-        if runner.exitcode is not None:
-          if runner.exitcode != 0:
-            if not checked_for_crashes:
-              LOG.info("Checking for crashes")
-              if print_crash_info_if_exists(impala, self.start_time):
-                self.print_duration()
-                sys.exit(runner.exitcode)
-              LOG.info("No crashes detected")
-              checked_for_crashes = True
-            self._check_successive_errors()
-          del self._query_runners[idx]
+      do_check_for_impala_crashes = False
+      with self._query_runners_lock:
+        # Iterate through the list backwards since we may be deleteing elements in place.
+        for idx in range(len(self._query_runners) - 1, -1, -1):
+          runner = self._query_runners[idx]
+          if runner.proc.exitcode is not None:
+            if runner.proc.exitcode != 0:
+              # Since at least one query runner process failed, make sure to check for
+              # crashed impalads.
+              do_check_for_impala_crashes = True
+              # TODO: Handle case for runner._num_queries_dequeued.value != \
+              # runner._num_queries_started.value
+              if runner._num_queries_started.value != runner._num_queries_finished.value:
+                # The query runner process may have crashed before updating the number
+                # of finished queries but after it incremented the number of queries
+                # started.
+                assert runner._num_queries_started.value - \
+                    runner._num_queries_finished.value == 1
+                increment(runner._num_queries_finished)
+                # Since we know that the runner crashed while trying to run a query, we
+                # count it as an 'other error'
+                increment(runner._num_other_errors)
+              self._check_successive_errors()
+            assert runner._num_queries_started.value == runner._num_queries_finished.value
+            # Make sure to record all the metrics before removing this runner from the
+            # list.
+            print("Query runner ({0}) exited with exit code {1}".format(
+                runner.proc.pid, runner.proc.exitcode))
+            self._record_runner_metrics_before_evict(self._query_runners[idx])
+
+            # Remove the query runner from the list.
+            del self._query_runners[idx]
+
+      if do_check_for_impala_crashes:
+        # Since we know that at least one query runner failed, check if any of the Impala
+        # daemons themselves crashed.
+        LOG.info("Checking for Impala crashes")
+        if print_crash_info_if_exists(impala, self.start_time):
+          self.print_duration()
+          sys.exit(runner.proc.exitcode)
+        do_check_for_impala_crashes = False
+        LOG.info("No Impala crashes detected")
+
       sleep(sleep_secs)
+      num_runners_remaining = self._num_runners_remaining()
+
       if should_print_status:
         last_report_secs += sleep_secs
         if last_report_secs > 5:
           if (
               not self._query_producer_thread.is_alive() or
               not self._query_consumer_thread.is_alive() or
-              not self._query_runners
+              not num_runners_remaining
           ):
             LOG.debug("Producer is alive: %s" % self._query_producer_thread.is_alive())
             LOG.debug("Consumer is alive: %s" % self._query_consumer_thread.is_alive())
             LOG.debug("Queue size: %s" % self._query_queue.qsize())
-            LOG.debug("Runners: %s" % len(self._query_runners))
+            LOG.debug("Runners: %s" % num_runners_remaining)
           last_report_secs = 0
           lines_printed %= 50
           self._print_status(print_header=(lines_printed == 0))
@@ -836,6 +972,18 @@ class QueryRunner(object):
     self.results_dir = gettempdir()
     self.check_if_mem_was_spilled = False
     self.common_query_options = {}
+    self.proc = None
+
+    # All these values are shared values between processes. We want these to be accessible
+    # by the parent process that started this QueryRunner, for operational purposes.
+    self._num_queries_dequeued = Value("i", 0)
+    self._num_queries_started = Value("i", 0)
+    self._num_queries_finished = Value("i", 0)
+    self._num_queries_exceeded_mem_limit = Value("i", 0)
+    self._num_queries_cancelled = Value("i", 0)
+    self._num_queries_timedout = Value("i", 0)
+    self._num_result_mismatches = Value("i", 0)
+    self._num_other_errors = Value("i", 0)
 
   def connect(self):
     self.impalad_conn = self.impalad.impala.connect(impalad=self.impalad)
@@ -930,6 +1078,16 @@ class QueryRunner(object):
       # A mem limit error would have been caught above, no need to check for that here.
       report.non_mem_limit_error = error
     return report
+
+  def update_from_query_report(self, report):
+    LOG.debug("Updating runtime stats (Query Runner PID: {0})".format(self.proc.pid))
+    increment(self._num_queries_finished)
+    if report.mem_limit_exceeded:
+      increment(self._num_queries_exceeded_mem_limit)
+    if report.was_cancelled:
+      increment(self._num_queries_cancelled)
+    if report.timed_out:
+      increment(self._num_queries_timedout)
 
   def _cancel(self, cursor, report):
     report.timed_out = True
