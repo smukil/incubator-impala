@@ -274,10 +274,18 @@ Status Messenger::AddAcceptorPool(const Sockaddr &accept_addr,
   // Before listening, if we expect to require Kerberos, we want to verify
   // that everything is set up correctly. This way we'll generate errors on
   // startup rather than later on when we first receive a client connection.
+  // Since we support SLES11, we omit calling PreflightCheckGSSAPI(), since SLES11 has
+  // krb-1.6, which has a bug that returns an error for empty 'clientin' buffers to
+  // sasl_server_start(). Also, since this is only done to fail fast, we're not losing
+  // functionality or security by omiting this. We'll now fail in the negotiation
+  // phase instead.
+  // TODO: Re-enable for Impala 3.0 when we'll stop supporting older OSes.
+  /*
   if (!keytab_file_.empty()) {
     RETURN_NOT_OK_PREPEND(ServerNegotiation::PreflightCheckGSSAPI(sasl_proto_name()),
                           "GSSAPI/Kerberos not properly configured");
   }
+  */
 
   Socket sock;
   RETURN_NOT_OK(sock.Init(0));
