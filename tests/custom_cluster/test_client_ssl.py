@@ -115,7 +115,8 @@ class TestClientSsl(CustomClusterTestSuite):
                   "--ssl_server_certificate=%s/server-cert.pem "
                   "--ssl_private_key=%s/server-key.pem "
                   "--hostname=localhost " # Required to match hostname in certificate"
-                  "--ssl_minimum_version=tlsv1 "
+                  "--ssl_minimum_version=tlsv1.2 "
+                  "--ssl_cipher_list=AES128-GCM-SHA256 "
                   % (CERT_DIR, CERT_DIR, CERT_DIR))
 
   @pytest.mark.execute_serially
